@@ -5,6 +5,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from posts.services import generate_post_text
 from socials.models import SocialAccount
 from socials.serializers import SocialAccountSerializer
 from socials.throttles import AIGenerateThrottle
@@ -32,7 +33,6 @@ class AIGenerateView(APIView):
 
         try:
             from article_publisher import exceptions as article_exceptions
-            from article_publisher import generate_article
         except ImportError as exc:
             logger.exception("Article publisher import failed")
             return Response(
@@ -41,7 +41,7 @@ class AIGenerateView(APIView):
             )
 
         try:
-            content = generate_article(topic)
+            content = generate_post_text(topic)
         except Exception as exc:
             exception_types = tuple(
                 exception

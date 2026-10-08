@@ -1,5 +1,9 @@
 from unittest.mock import patch
 
+import sys
+from types import ModuleType
+from unittest.mock import Mock, patch
+
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.test import TestCase
@@ -191,6 +195,36 @@ class APIEndpointTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("token", response.data[0])
+
+    def test_generate_post_text_formats_article_without_reference_markers(self):
+        fake_publisher = ModuleType("article_publisher")
+
+        class GenerationError(Exception):
+            pass
+
+        class FakeResponse:
+            text = (
+                "Hook sentence. First paragraph with a factual claim.\n\n"
+                "Second paragraph with more facts.\n\n"
+                "#tag1 #tag2\n\n"
+                "References\n"
+                "https://example.com/source/article?id=12345\n"
+                "[1] https://example.com/ignored"
+            )
+
+        fake_publisher.exceptions = type("Exceptions", (), {"GenerationError": GenerationError})
+        fake_publisher.generate_article = Mock(return_value=FakeResponse.text)
+        fake_client = Mock()
+        fake_client.generate_content.return_value = type("Response", (), {"text": "Hook sentence. First paragraph.\n\nSecond paragraph.\n\n#tag1 #tag2\nhttps://example.com/source/article?id=12345"})()
+        fake_publisher.client = fake_client
+
+        with patch.dict(sys.modules, {"article_publisher": fake_publisher}):
+            result = __import__("posts.services", fromlist=["generate_post_text"]).generate_post_text("topic")
+
+        self.assertNotIn("[1]", result)
+        self.assertNotIn("References", result)
+        self.assertTrue(result.endswith("https://example.com/source/article?id=12345"))
+        self.assertLess(len(result.split()), 130)
 
     def test_stale_publishing_row_is_marked_failed(self):
         stale_post = Post.objects.create(

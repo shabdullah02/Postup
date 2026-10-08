@@ -17,12 +17,12 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         try:
             from article_publisher import exceptions as article_exceptions
-            from article_publisher import generate_article
+            from posts.services import generate_post_text
         except ImportError as e:
             raise CommandError(str(e)) from e
 
         try:
-            content = generate_article(options["topic"])
+            content = generate_post_text(options["topic"])
         except Exception as e:
             article_exceptions_list = tuple(
                 exc
