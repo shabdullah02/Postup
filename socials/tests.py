@@ -21,7 +21,6 @@ class FacebookOAuthAPITests(TestCase):
         )
 
     def setUp(self):
-        cache.clear()
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
@@ -92,6 +91,7 @@ class AIGenerateAPITests(TestCase):
         )
 
     def setUp(self):
+        cache.clear()
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 

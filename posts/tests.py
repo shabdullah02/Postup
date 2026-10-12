@@ -188,7 +188,7 @@ class APIEndpointTests(TestCase):
     def test_accounts_as_alice_never_contain_token_key(self):
         self.client.force_authenticate(user=self.alice)
 
-        response = self.client.get("/api/accounts/")
+        response = self.client.get("/api/social-accounts/")
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("token", response.data[0])
