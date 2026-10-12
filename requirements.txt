@@ -19,7 +19,9 @@ dateparser==1.4.3
 ddgs==9.16.0
 distro==1.9.0
 Django==6.1.2
+django-cors-headers==4.9.0
 djangorestframework==3.18.3
+fonttools==4.66.1
 frozenlist==1.8.0
 google-auth==2.60.0
 google-genai==2.28.0

@@ -2,8 +2,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from accounts.models import SocialAccount
 from posts.models import Post
-from socials.models import SocialAccount
 
 
 class Command(BaseCommand):
@@ -17,12 +17,12 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         try:
             from article_publisher import exceptions as article_exceptions
-            from posts.services import generate_post_text
+            from article_publisher import generate_article
         except ImportError as e:
             raise CommandError(str(e)) from e
 
         try:
-            content = generate_post_text(options["topic"])
+            content = generate_article(options["topic"])
         except Exception as e:
             article_exceptions_list = tuple(
                 exc

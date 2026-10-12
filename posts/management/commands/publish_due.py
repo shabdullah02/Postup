@@ -1,8 +1,9 @@
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
+from accounts.models import SocialAccount
 from posts.models import Post
-from socials.adapters import ADAPTERS
+from socials.adapters import ADAPTERS, AuthExpiredError
 
 
 class Command(BaseCommand):
@@ -36,11 +37,25 @@ class Command(BaseCommand):
                 continue
 
             post = Post.objects.get(pk=post_id)
+            account = post.account
+            if account.status != SocialAccount.Status.ACTIVE:
+                post.status = Post.Status.FAILED
+                post.error = "failed: reauth required"
+                post.save(update_fields=["status", "error"])
+                self.stdout.write(f"{post_id} {post.status}")
+                continue
+
             try:
-                external_post_id = ADAPTERS[post.account.platform].post(
-                    post.account,
+                external_post_id = ADAPTERS[account.provider].post(
+                    account,
                     post.content,
                 )
+            except AuthExpiredError:
+                post.status = Post.Status.FAILED
+                post.error = "failed: reauth required"
+                post.save(update_fields=["status", "error"])
+                self.stdout.write(f"{post_id} {post.status}")
+                continue
             except Exception as e:
                 post.status = Post.Status.FAILED
                 post.error = str(e)

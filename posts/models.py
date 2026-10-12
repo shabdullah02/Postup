@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.db import models
 
-from socials.models import SocialAccount
+from accounts.models import SocialAccount
 
 
 class Post(models.Model):
