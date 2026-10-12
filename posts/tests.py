@@ -6,8 +6,9 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from accounts.models import SocialAccount
+from accounts.utils.crypto import encrypt_token
 from posts.models import Post
-from socials.models import SocialAccount
 
 
 class APIEndpointTests(TestCase):
@@ -19,17 +20,17 @@ class APIEndpointTests(TestCase):
 
         cls.alice_account = SocialAccount.objects.create(
             user=cls.alice,
-            platform="facebook",
+            provider="facebook",
             external_id="alice-external-id",
             name="Alice",
-            token="alice-token",
+            token_encrypted=encrypt_token("alice-token"),
         )
         cls.bob_account = SocialAccount.objects.create(
             user=cls.bob,
-            platform="facebook",
+            provider="facebook",
             external_id="bob-external-id",
             name="Bob",
-            token="bob-token",
+            token_encrypted=encrypt_token("bob-token"),
         )
         cls.alice_post = Post.objects.create(
             user=cls.alice,
