@@ -23,6 +23,7 @@ class Command(BaseCommand):
             status=Post.Status.SCHEDULED,
             scheduled_at__lte=now,
         ).values_list("id", flat=True)
+        reauth_required_account_ids = set()
 
         for post_id in post_ids:
             claimed_at = timezone.now()
@@ -38,7 +39,11 @@ class Command(BaseCommand):
 
             post = Post.objects.get(pk=post_id)
             account = post.account
-            if account.status != SocialAccount.Status.ACTIVE:
+            if (
+                account.id in reauth_required_account_ids
+                or account.status != SocialAccount.Status.ACTIVE
+            ):
+                reauth_required_account_ids.add(account.id)
                 post.status = Post.Status.FAILED
                 post.error = "failed: reauth required"
                 post.save(update_fields=["status", "error"])
@@ -51,6 +56,7 @@ class Command(BaseCommand):
                     post.content,
                 )
             except AuthExpiredError:
+                reauth_required_account_ids.add(account.id)
                 post.status = Post.Status.FAILED
                 post.error = "failed: reauth required"
                 post.save(update_fields=["status", "error"])

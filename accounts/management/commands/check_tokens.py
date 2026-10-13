@@ -2,9 +2,11 @@ from django.core.management.base import BaseCommand
 from django.conf import settings
 
 import requests
+from cryptography.fernet import InvalidToken
 
 from accounts.models import SocialAccount
 from accounts.utils.crypto import decrypt_token
+from socials.adapters import AuthExpiredError
 
 
 class Command(BaseCommand):
@@ -15,7 +17,15 @@ class Command(BaseCommand):
             if account.provider != SocialAccount.Provider.FACEBOOK:
                 continue
 
-            token = decrypt_token(account.token_encrypted)
+            try:
+                token = decrypt_token(account.token_encrypted)
+            except InvalidToken as exc:
+                account.status = SocialAccount.Status.NEEDS_REAUTH
+                account.save(update_fields=["status"])
+                raise AuthExpiredError(
+                    "Stored Facebook token is invalid; reauth required."
+                ) from exc
+
             url = f"https://graph.facebook.com/{settings.FB_GRAPH_VERSION}/debug_token"
             response = requests.get(
                 url,

@@ -16,7 +16,7 @@ from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env")
+load_dotenv(BASE_DIR / ".env", override=True)
 
 TOKEN_ENCRYPTION_KEY = os.getenv("TOKEN_ENCRYPTION_KEY")
 if not TOKEN_ENCRYPTION_KEY:
@@ -26,6 +26,17 @@ FB_APP_ID = os.getenv("FB_APP_ID", "")
 FB_APP_SECRET = os.getenv("FB_APP_SECRET", "")
 FB_REDIRECT_URI = os.getenv("FB_REDIRECT_URI", "http://localhost:3000/auth/facebook/callback")
 FB_GRAPH_VERSION = os.getenv("FB_GRAPH_VERSION", "v21.0")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+
+def _validate_facebook_oauth_settings(app_id, app_secret):
+    if not app_id.isdigit():
+        raise ImproperlyConfigured("FB_APP_ID must contain only digits.")
+    if not app_secret:
+        raise ImproperlyConfigured("FB_APP_SECRET is required.")
+
+
+_validate_facebook_oauth_settings(FB_APP_ID, FB_APP_SECRET)
 
 
 # Quick-start development settings - unsuitable for production

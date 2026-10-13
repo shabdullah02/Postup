@@ -1,6 +1,7 @@
 import logging
 
 import requests
+from cryptography.fernet import InvalidToken
 from django.conf import settings
 
 from accounts.models import SocialAccount
@@ -22,7 +23,13 @@ class FacebookAdapter:
         if account.provider != SocialAccount.Provider.FACEBOOK:
             raise PublishError(f"Unsupported provider: {account.provider}")
 
-        token = decrypt_token(account.token_encrypted)
+        try:
+            token = decrypt_token(account.token_encrypted)
+        except InvalidToken as exc:
+            account.status = SocialAccount.Status.NEEDS_REAUTH
+            account.save(update_fields=["status"])
+            raise AuthExpiredError("Stored Facebook token is invalid; reauth required.") from exc
+
         url = (
             f"https://graph.facebook.com/{settings.FB_GRAPH_VERSION}/"
             f"{account.external_id}/feed"

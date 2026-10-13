@@ -33,6 +33,13 @@ class FacebookOAuthAPITests(TestCase):
         short_token_response.json.return_value = {"access_token": "short-token"}
         long_token_response = Mock(ok=True)
         long_token_response.json.return_value = {"access_token": "long-token"}
+        permissions_response = Mock(ok=True)
+        permissions_response.json.return_value = {
+            "data": [
+                {"permission": "pages_manage_posts", "status": "granted"},
+                {"permission": "pages_show_list", "status": "granted"},
+            ]
+        }
         pages_response = Mock(ok=True)
         pages_response.json.return_value = {
             "data": [{"id": "page-123", "name": "Alice Brand", "access_token": "page-token-value"}]
@@ -40,7 +47,7 @@ class FacebookOAuthAPITests(TestCase):
 
         with patch(
             "accounts.views.requests.get",
-            side_effect=[short_token_response, long_token_response, pages_response],
+            side_effect=[short_token_response, long_token_response, permissions_response, pages_response],
         ):
             response = self.client.get(
                 "/api/auth/callback/facebook/",
