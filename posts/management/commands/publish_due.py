@@ -1,7 +1,9 @@
 from django.core.management.base import BaseCommand
+from django.conf import settings
 from django.utils import timezone
 
 from accounts.models import SocialAccount
+from accounts.providers.instagram import InstagramProvider
 from posts.models import Post
 from socials.adapters import ADAPTERS, AuthExpiredError, FacebookPublishResult
 
@@ -50,11 +52,24 @@ class Command(BaseCommand):
                 self.stdout.write(f"{post_id} {post.status}")
                 continue
 
+            if (
+                account.provider == SocialAccount.Provider.INSTAGRAM
+                and not settings.INSTAGRAM_ENABLED
+            ):
+                post.status = Post.Status.FAILED
+                post.error = "failed: instagram disabled"
+                post.save(update_fields=["status", "error"])
+                self.stdout.write(f"{post_id} {post.status}")
+                continue
+
             try:
-                publish_result = ADAPTERS[account.provider].post(
-                    account,
-                    post.content,
-                )
+                if account.provider == SocialAccount.Provider.INSTAGRAM:
+                    publish_result = InstagramProvider().publish(account, post.content)
+                else:
+                    publish_result = ADAPTERS[account.provider].post(
+                        account,
+                        post.content,
+                    )
             except AuthExpiredError:
                 reauth_required_account_ids.add(account.id)
                 post.status = Post.Status.FAILED

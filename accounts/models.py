@@ -5,6 +5,7 @@ from django.db import models
 class SocialAccount(models.Model):
     class Provider(models.TextChoices):
         FACEBOOK = "facebook", "Facebook"
+        INSTAGRAM = "instagram", "Instagram"
 
     class Status(models.TextChoices):
         ACTIVE = "active", "Active"

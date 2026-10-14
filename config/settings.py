@@ -27,6 +27,7 @@ FB_APP_SECRET = os.getenv("FB_APP_SECRET", "")
 FB_REDIRECT_URI = os.getenv("FB_REDIRECT_URI", "http://localhost:3000/auth/facebook/callback")
 FB_GRAPH_VERSION = os.getenv("FB_GRAPH_VERSION", "v21.0")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+INSTAGRAM_ENABLED = os.getenv("IG_ENABLED", "false").lower() == "true"
 
 
 def _validate_facebook_oauth_settings(app_id, app_secret):

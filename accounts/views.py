@@ -93,6 +93,11 @@ class FacebookConnectView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if request.GET.get("provider") == "instagram":
+            if not settings.INSTAGRAM_ENABLED:
+                return Response({"detail": "Instagram is not enabled."}, status=404)
+            return Response({"detail": "Instagram not implemented yet."}, status=501)
+
         reconnect_id = request.GET.get("reconnect")
         if reconnect_id:
             get_object_or_404(
