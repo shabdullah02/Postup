@@ -16,6 +16,7 @@ class PostSerializer(serializers.ModelSerializer):
             "status",
             "error",
             "external_post_id",
+            "permalink_url",
             "posted_at",
             "created_at",
         )
@@ -25,6 +26,7 @@ class PostSerializer(serializers.ModelSerializer):
             "status",
             "error",
             "external_post_id",
+            "permalink_url",
             "posted_at",
             "created_at",
         )

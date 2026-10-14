@@ -54,6 +54,16 @@ class APIEndpointTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, [])
 
+    def test_posts_list_exposes_saved_permalink_url(self):
+        self.client.force_authenticate(user=self.alice)
+        self.alice_post.permalink_url = "https://www.facebook.com/posts/alice-post"
+        self.alice_post.save(update_fields=["permalink_url"])
+
+        response = self.client.get("/api/posts/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data[0]["permalink_url"], self.alice_post.permalink_url)
+
     def test_bob_get_alice_post_returns_404(self):
         self.client.force_authenticate(user=self.bob)
 

@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 
 import requests
 from cryptography.fernet import InvalidToken
@@ -10,6 +11,12 @@ from accounts.utils.crypto import decrypt_token
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class FacebookPublishResult:
+    external_post_id: str
+    permalink_url: str | None = None
+
+
 class PublishError(Exception):
     pass
 
@@ -19,7 +26,7 @@ class AuthExpiredError(PublishError):
 
 
 class FacebookAdapter:
-    def post(self, account: SocialAccount, content: str) -> str:
+    def post(self, account: SocialAccount, content: str) -> FacebookPublishResult:
         if account.provider != SocialAccount.Provider.FACEBOOK:
             raise PublishError(f"Unsupported provider: {account.provider}")
 
@@ -51,7 +58,20 @@ class FacebookAdapter:
                 raise AuthExpiredError("Facebook token expired or invalid; reauth required.")
             raise PublishError(error_payload.get("message") or response.text)
 
-        return response.json()["id"]
+        external_post_id = response.json()["id"]
+        permalink_url = None
+        try:
+            permalink_response = requests.get(
+                f"https://graph.facebook.com/{settings.FB_GRAPH_VERSION}/{external_post_id}",
+                params={"fields": "permalink_url", "access_token": token},
+                timeout=20,
+            )
+            if permalink_response.ok:
+                permalink_url = permalink_response.json().get("permalink_url")
+        except (requests.RequestException, ValueError, AttributeError):
+            pass
+
+        return FacebookPublishResult(external_post_id, permalink_url)
 
 
 ADAPTERS = {"facebook": FacebookAdapter()}

@@ -124,11 +124,16 @@ class FacebookSelectPagesView(APIView):
         ])
 
     def post(self, request):
-        selected = request.data.get("page_ids") or []
-        pages = request.session.get("fb_pending_pages") or []
+        pages = request.session.get("fb_pending_pages")
+        if not pages:
+            return Response({"detail": "No pending Facebook Pages."}, status=400)
+
+        selected = request.data.get("page_ids")
 
         if not isinstance(selected, list):
             return Response({"detail": "page_ids must be a list."}, status=400)
+        if not selected:
+            return Response({"detail": "page_ids must not be empty."}, status=400)
 
         selected_pages = [
             page for page in pages if str(page["id"]) in {str(item) for item in selected}

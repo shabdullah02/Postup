@@ -3,7 +3,7 @@ from django.utils import timezone
 
 from accounts.models import SocialAccount
 from posts.models import Post
-from socials.adapters import ADAPTERS, AuthExpiredError
+from socials.adapters import ADAPTERS, AuthExpiredError, FacebookPublishResult
 
 
 class Command(BaseCommand):
@@ -51,7 +51,7 @@ class Command(BaseCommand):
                 continue
 
             try:
-                external_post_id = ADAPTERS[account.provider].post(
+                publish_result = ADAPTERS[account.provider].post(
                     account,
                     post.content,
                 )
@@ -70,7 +70,11 @@ class Command(BaseCommand):
                 continue
 
             post.status = Post.Status.POSTED
-            post.external_post_id = external_post_id
+            if isinstance(publish_result, FacebookPublishResult):
+                post.external_post_id = publish_result.external_post_id
+                post.permalink_url = publish_result.permalink_url
+            else:
+                post.external_post_id = publish_result
             post.posted_at = timezone.now()
-            post.save(update_fields=["status", "external_post_id", "posted_at"])
+            post.save(update_fields=["status", "external_post_id", "permalink_url", "posted_at"])
             self.stdout.write(f"{post_id} {post.status}")
