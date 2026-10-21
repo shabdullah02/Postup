@@ -430,7 +430,7 @@ def test_facebook_select_post_rejects_missing_pending_pages_or_empty_list(
     assert not SocialAccount.objects.filter(user=user).exists()
 
 
-def test_callback_rejects_mismatched_state_with_400(user):
+def test_callback_rejects_mismatched_state_with_frontend_redirect(user):
     client = APIClient()
     client.force_authenticate(user=user)
     session = client.session
@@ -442,8 +442,11 @@ def test_callback_rejects_mismatched_state_with_400(user):
         {"state": "wrong-state", "code": "some-code"},
     )
 
-    assert response.status_code == 400
-    assert "Invalid Facebook OAuth state." in response.data["detail"]
+    assert response.status_code == 302
+    assert response["Location"] == (
+        f"{settings.FRONTEND_URL.rstrip('/')}/accounts?fb_error=invalid_state"
+    )
+    assert "fb_oauth_state" not in client.session
 
 
 def test_callback_does_not_include_tokens_in_response_body(user):
@@ -478,7 +481,7 @@ def test_callback_does_not_include_tokens_in_response_body(user):
     with patch(
         "accounts.views.requests.get",
         side_effect=[short_token_response, long_token_response, permissions_response, pages_response],
-    ):
+    ) as mock_get:
         response = client.get(
             "/api/auth/callback/facebook/",
             {"state": "expected-state", "code": "oauth-code"},
@@ -486,6 +489,7 @@ def test_callback_does_not_include_tokens_in_response_body(user):
 
     assert response.status_code == 302
     assert response["Location"] == f"{settings.FRONTEND_URL.rstrip('/')}/accounts/select"
+    assert mock_get.call_args_list[0].kwargs["params"]["redirect_uri"] == settings.FB_REDIRECT_URI
     body = response.content.decode()
     assert "short-lived-secret" not in body
     assert "long-lived-secret" not in body
@@ -503,8 +507,12 @@ def test_facebook_connect_uses_rerequest_for_reconnect_and_declined_permissions(
     )
     reconnect_params = parse_qs(urlsplit(reconnect_response["Location"]).query)
     assert "auth_type" not in reconnect_params
+    assert reconnect_params["redirect_uri"] == [settings.FB_REDIRECT_URI]
     assert client.session["fb_reconnect_id"] == str(facebook_account.id)
 
+    user.subscription.plan = "pro"
+    user.subscription.status = "active"
+    user.subscription.save(update_fields=["plan", "status", "updated_at"])
     session = client.session
     session["fb_rerequest"] = True
     session.save()

@@ -54,6 +54,18 @@ class APIEndpointTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data, [])
 
+    def test_posts_list_returns_more_than_default_page_size(self):
+        self.client.force_authenticate(user=self.alice)
+        Post.objects.bulk_create([
+            Post(user=self.alice, account=self.alice_account, content=f"Post {number}")
+            for number in range(25)
+        ])
+
+        response = self.client.get("/api/posts/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 26)
+
     def test_posts_list_exposes_saved_permalink_url(self):
         self.client.force_authenticate(user=self.alice)
         self.alice_post.permalink_url = "https://www.facebook.com/posts/alice-post"
@@ -62,12 +74,26 @@ class APIEndpointTests(TestCase):
         response = self.client.get("/api/posts/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data[0]["permalink_url"], self.alice_post.permalink_url)
+        self.assertEqual(
+            response.data[0]["permalink_url"],
+            self.alice_post.permalink_url,
+        )
 
     def test_bob_get_alice_post_returns_404(self):
         self.client.force_authenticate(user=self.bob)
 
         response = self.client.get(f"/api/posts/{self.alice_post.pk}/")
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_bob_schedule_alice_post_returns_404(self):
+        self.client.force_authenticate(user=self.bob)
+
+        response = self.client.post(
+            f"/api/posts/{self.alice_post.pk}/schedule/",
+            {"scheduled_at": (timezone.now() + timezone.timedelta(days=1)).isoformat()},
+            format="json",
+        )
 
         self.assertEqual(response.status_code, 404)
 
@@ -202,6 +228,34 @@ class APIEndpointTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("token", response.data[0])
+
+    def test_bob_social_account_list_does_not_include_alices_account(self):
+        self.client.force_authenticate(user=self.bob)
+
+        response = self.client.get("/api/social-accounts/")
+
+        self.assertEqual(response.status_code, 200)
+        returned_ids = {account["id"] for account in response.data}
+        self.assertEqual(returned_ids, {self.bob_account.pk})
+        self.assertNotIn(self.alice_account.pk, returned_ids)
+
+    def test_social_accounts_list_returns_more_than_default_page_size(self):
+        self.client.force_authenticate(user=self.alice)
+        SocialAccount.objects.bulk_create([
+            SocialAccount(
+                user=self.alice,
+                provider="facebook",
+                external_id=f"alice-page-{number}",
+                name=f"Alice Page {number}",
+                token_encrypted=b"encrypted",
+            )
+            for number in range(25)
+        ])
+
+        response = self.client.get("/api/social-accounts/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 26)
 
     def test_stale_publishing_row_is_marked_failed(self):
         stale_post = Post.objects.create(

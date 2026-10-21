@@ -102,13 +102,13 @@ class AIGenerateAPITests(TestCase):
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
-    def test_twenty_first_request_in_hour_returns_429(self):
+    def test_sixth_free_plan_request_in_hour_returns_429(self):
         fake_module = ModuleType("article_publisher")
         fake_module.exceptions = type("Exceptions", (), {})
         fake_module.generate_article = Mock(return_value="generated content")
 
         with patch.dict(sys.modules, {"article_publisher": fake_module}):
-            for _ in range(20):
+            for _ in range(5):
                 response = self.client.post(
                     "/api/ai/generate/",
                     {"topic": "test topic"},
@@ -148,3 +148,51 @@ class AIGenerateAPITests(TestCase):
             "Generation failed. Try again later.",
         )
         self.assertNotIn("Secret error details", response.content.decode())
+
+    def test_topic_whitespace_is_normalized(self):
+        fake_module = ModuleType("article_publisher")
+        fake_module.exceptions = type("Exceptions", (), {})
+        fake_module.generate_article = Mock(return_value="generated content")
+
+        with patch.dict(sys.modules, {"article_publisher": fake_module}):
+            response = self.client.post(
+                "/api/ai/generate/",
+                {"topic": "  spaced   topic\nname  "},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        fake_module.generate_article.assert_called_once_with("spaced topic name")
+
+    def test_gemini_overload_returns_503_with_retry_after(self):
+        fake_module = ModuleType("article_publisher")
+
+        class GenerationError(Exception):
+            pass
+
+        class GeminiOverload(Exception):
+            code = 503
+
+        def overloaded(*args):
+            try:
+                raise GeminiOverload("busy")
+            except GeminiOverload as exc:
+                raise GenerationError("generation unavailable") from exc
+
+        fake_module.exceptions = type("Exceptions", (), {"GenerationError": GenerationError})
+        fake_module.generate_article = Mock(side_effect=overloaded)
+        with patch.dict(sys.modules, {"article_publisher": fake_module}):
+            response = self.client.post(
+                "/api/ai/generate/", {"topic": "busy"}, format="json"
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response["Retry-After"], "60")
+
+    def test_generator_import_error_returns_500(self):
+        with patch.dict(sys.modules, {"article_publisher": None}):
+            response = self.client.post(
+                "/api/ai/generate/", {"topic": "topic"}, format="json"
+            )
+
+        self.assertEqual(response.status_code, 500)

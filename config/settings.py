@@ -16,7 +16,7 @@ from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-load_dotenv(BASE_DIR / ".env", override=True)
+load_dotenv(BASE_DIR / ".env")
 
 TOKEN_ENCRYPTION_KEY = os.getenv("TOKEN_ENCRYPTION_KEY")
 if not TOKEN_ENCRYPTION_KEY:
@@ -24,10 +24,23 @@ if not TOKEN_ENCRYPTION_KEY:
 
 FB_APP_ID = os.getenv("FB_APP_ID", "")
 FB_APP_SECRET = os.getenv("FB_APP_SECRET", "")
-FB_REDIRECT_URI = os.getenv("FB_REDIRECT_URI", "http://localhost:3000/auth/facebook/callback")
+FB_REDIRECT_URI = os.getenv(
+    "FB_REDIRECT_URI", "http://localhost:8000/api/auth/callback/facebook/"
+)
 FB_GRAPH_VERSION = os.getenv("FB_GRAPH_VERSION", "v21.0")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 INSTAGRAM_ENABLED = os.getenv("IG_ENABLED", "false").lower() == "true"
+DEBUG = os.getenv("DEBUG", "True").lower() in {"true", "1", "yes"}
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRO_PRICE_ID = os.getenv("STRIPE_PRO_PRICE_ID", "")
+STRIPE_AGENCY_PRICE_ID = os.getenv("STRIPE_AGENCY_PRICE_ID", "")
+
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    if not DEBUG:
+        raise ImproperlyConfigured("SECRET_KEY is required when DEBUG is disabled.")
+    SECRET_KEY = "django-insecure-development-only"
 
 
 def _validate_facebook_oauth_settings(app_id, app_secret):
@@ -43,13 +56,13 @@ _validate_facebook_oauth_settings(FB_APP_ID, FB_APP_SECRET)
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.1/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-5fir1ufa-!6c@4e&7vq2!f_3*6fcg-=bgo**9mdq@2ia*3zx2a'
-
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
-
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = [
+    host.strip()
+    for host in os.getenv("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+    if host.strip()
+]
+if not DEBUG and not ALLOWED_HOSTS:
+    raise ImproperlyConfigured("ALLOWED_HOSTS must be configured when DEBUG is disabled.")
 
 
 # Application definition
@@ -63,9 +76,11 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'corsheaders',
     'rest_framework',
+    'drf_spectacular',
     'posts',
     'socials',
     'accounts',
+    'billing.apps.BillingConfig',
 ]
 
 MIDDLEWARE = [
@@ -82,14 +97,30 @@ MIDDLEWARE = [
 ROOT_URLCONF = 'config.urls'
 
 CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",")
+    if origin.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    origin.strip()
+    for origin in os.getenv(
+        "CSRF_TRUSTED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    ).split(",")
+    if origin.strip()
 ]
+
+SESSION_COOKIE_NAME = "postup_sessionid"
+CSRF_COOKIE_NAME = "postup_csrftoken"
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+SESSION_COOKIE_HTTPONLY = True
+SECURE_SSL_REDIRECT = not DEBUG
+SECURE_HSTS_SECONDS = 31536000 if not DEBUG else 0
+SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
+SECURE_HSTS_PRELOAD = not DEBUG
 
 TEMPLATES = [
     {
@@ -151,14 +182,22 @@ USE_I18N = True
 USE_TZ = True
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework.authentication.SessionAuthentication',
+        'billing.authentication.SubscriptionSessionAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
     ],
     'DEFAULT_THROTTLE_RATES': {
-        'ai': '20/hour',
+        'registration': '5/hour',
     },
+    'EXCEPTION_HANDLER': 'config.api.api_exception_handler',
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "Postup API",
+    "DESCRIPTION": "Post scheduling and social account API",
+    "VERSION": "1.0.0",
 }
 
 # Static files (CSS, JavaScript, Images)

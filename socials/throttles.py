@@ -1,5 +1,4 @@
-from rest_framework.throttling import UserRateThrottle
+from billing.throttles import PlanAIGenerationThrottle
 
 
-class AIGenerateThrottle(UserRateThrottle):
-    scope = "ai"
+AIGenerateThrottle = PlanAIGenerationThrottle

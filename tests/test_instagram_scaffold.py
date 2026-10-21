@@ -43,7 +43,10 @@ def test_instagram_connect_is_404_by_default_and_makes_no_requests(authenticated
         )
 
     assert response.status_code == 404
-    assert response.data == {"detail": "Instagram is not enabled."}
+    assert response.data == {
+        "detail": "Instagram is not enabled.",
+        "code": "provider_disabled",
+    }
     mock_get.assert_not_called()
     mock_post.assert_not_called()
 
@@ -62,7 +65,10 @@ def test_instagram_connect_is_501_when_enabled_and_makes_no_requests(authenticat
         )
 
     assert response.status_code == 501
-    assert response.data == {"detail": "Instagram not implemented yet."}
+    assert response.data == {
+        "detail": "Instagram not implemented yet.",
+        "code": "not_implemented",
+    }
     mock_get.assert_not_called()
     mock_post.assert_not_called()
 
