@@ -270,6 +270,37 @@ class FacebookSelectPagesView(APIView):
         return Response(saved)
 
 
+def _pages_from_granular_scopes(long_token):
+    """Fallback when /me/accounts is empty: fetch Pages the token was granted."""
+    debug = requests.get(
+        f"https://graph.facebook.com/{settings.FB_GRAPH_VERSION}/debug_token",
+        params={
+            "input_token": long_token,
+            "access_token": f"{settings.FB_APP_ID}|{settings.FB_APP_SECRET}",
+        },
+        timeout=20,
+    )
+    if not debug.ok:
+        return []
+    page_ids = []
+    for item in debug.json().get("data", {}).get("granular_scopes") or []:
+        if item.get("scope") == "pages_show_list":
+            page_ids = [str(i) for i in item.get("target_ids") or []]
+    pages = []
+    for page_id in page_ids:
+        response = requests.get(
+            f"https://graph.facebook.com/{settings.FB_GRAPH_VERSION}/{page_id}",
+            params={"fields": "id,name,access_token", "access_token": long_token},
+            timeout=20,
+        )
+        if not response.ok:
+            continue
+        page = response.json()
+        if isinstance(page, dict) and page.get("access_token"):
+            pages.append(page)
+    return pages
+
+
 @extend_schema_view(
     get=extend_schema(
         responses={302: OpenApiResponse(description="Redirect to the frontend.")}
@@ -377,6 +408,11 @@ class FacebookCallbackView(APIView):
             return self._frontend_error_redirect("facebook_unavailable")
         if any(not isinstance(page, dict) for page in pages):
             return self._frontend_error_redirect("facebook_unavailable")
+        if not pages:
+            try:
+                pages = _pages_from_granular_scopes(long_token)
+            except (requests.RequestException, ValueError, AttributeError, TypeError):
+                pages = []
         if not pages:
             return self._frontend_error_redirect("no_pages")
 

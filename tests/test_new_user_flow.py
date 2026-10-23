@@ -85,7 +85,9 @@ def test_new_user_facebook_connect_publish_expiry_and_reconnect():
 
     with patch(
         "accounts.views.requests.get",
-        side_effect=oauth_responses([], "first-user-token"),
+        side_effect=oauth_responses([], "first-user-token") + [
+            graph_response({"data": {"granular_scopes": []}})
+        ],
     ):
         no_pages_response = oauth_callback(client, first_state)
     responses.append(no_pages_response)

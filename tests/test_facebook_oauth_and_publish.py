@@ -549,10 +549,86 @@ def test_callback_redirects_when_facebook_returns_no_pages(user):
     session["fb_oauth_state"] = "expected-state"
     session.save()
 
-    with patch("accounts.views.requests.get", side_effect=callback_responses([])):
+    with patch(
+        "accounts.views.requests.get",
+        side_effect=callback_responses([]) + [
+            graph_response({"data": {"granular_scopes": []}})
+        ],
+    ):
         response = callback_request(client)
 
     assert response["Location"] == f"{settings.FRONTEND_URL.rstrip('/')}/accounts?fb_error=no_pages"
+    assert_no_tokens(response, "short-lived-secret", "long-lived-secret")
+
+
+def test_callback_falls_back_to_granted_pages_when_me_accounts_is_empty(user):
+    client = APIClient()
+    client.force_authenticate(user=user)
+    session = client.session
+    session["fb_oauth_state"] = "expected-state"
+    session.save()
+    responses = [
+        graph_response({"access_token": "short-lived-secret"}),
+        graph_response({"access_token": "long-lived-secret"}),
+        graph_response({"data": [
+            {"permission": "pages_manage_posts", "status": "granted"},
+            {"permission": "pages_show_list", "status": "granted"},
+        ]}),
+        graph_response({"data": []}),
+        graph_response({"data": {"granular_scopes": [
+            {"scope": "pages_show_list", "target_ids": ["page-123"]}
+        ]}}),
+        graph_response({
+            "id": "page-123",
+            "name": "My Page",
+            "access_token": "page-secret",
+        }),
+    ]
+
+    with patch("accounts.views.requests.get", side_effect=responses):
+        response = callback_request(client)
+
+    assert response.status_code == 302
+    assert response["Location"] == f"{settings.FRONTEND_URL.rstrip('/')}/accounts/select"
+    assert_no_tokens(response, "short-lived-secret", "long-lived-secret", "page-secret")
+
+    selection = client.post(
+        "/api/auth/connect/facebook/select/",
+        {"page_ids": ["page-123"]},
+        format="json",
+    )
+    assert selection.status_code == 200
+    account = SocialAccount.objects.get(user=user, external_id="page-123")
+    assert decrypt_token(account.token_encrypted) == "page-secret"
+
+
+def test_callback_fallback_skips_page_without_access_token(user):
+    client = APIClient()
+    client.force_authenticate(user=user)
+    session = client.session
+    session["fb_oauth_state"] = "expected-state"
+    session.save()
+    responses = [
+        graph_response({"access_token": "short-lived-secret"}),
+        graph_response({"access_token": "long-lived-secret"}),
+        graph_response({"data": [
+            {"permission": "pages_manage_posts", "status": "granted"},
+            {"permission": "pages_show_list", "status": "granted"},
+        ]}),
+        graph_response({"data": []}),
+        graph_response({"data": {"granular_scopes": [
+            {"scope": "pages_show_list", "target_ids": ["page-123"]}
+        ]}}),
+        graph_response({"id": "page-123", "name": "My Page"}),
+    ]
+
+    with patch("accounts.views.requests.get", side_effect=responses):
+        response = callback_request(client)
+
+    assert response.status_code == 302
+    assert response["Location"] == (
+        f"{settings.FRONTEND_URL.rstrip('/')}/accounts?fb_error=no_pages"
+    )
     assert_no_tokens(response, "short-lived-secret", "long-lived-secret")
 
 
