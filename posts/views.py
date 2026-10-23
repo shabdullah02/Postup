@@ -8,6 +8,7 @@ from rest_framework.response import Response
 
 from posts.models import Post
 from posts.serializers import PostSerializer
+from posts.services import publish_post
 from billing.entitlements import ensure_within_plan_limit
 from config.api import error_response
 
@@ -50,6 +51,44 @@ class PostViewSet(viewsets.ModelViewSet):
                 400,
             )
         return super().destroy(request, *args, **kwargs)
+
+    @action(detail=True, methods=["post"])
+    def publish_now(self, request, *args, **kwargs):
+        post = self.get_object()
+        if post.status not in {Post.Status.DRAFT, Post.Status.SCHEDULED}:
+            return error_response(
+                "Only draft or scheduled posts can be published.",
+                "invalid_post_state",
+                400,
+            )
+
+        now = timezone.localtime()
+        period_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        additional = int(
+            post.status != Post.Status.SCHEDULED
+            and timezone.localtime(post.created_at) < period_start
+        )
+        ensure_within_plan_limit(
+            request.user, "posts_per_month", additional=additional
+        )
+
+        claimed = Post.objects.filter(
+            pk=post.pk,
+            status__in=[Post.Status.DRAFT, Post.Status.SCHEDULED],
+        ).update(
+            status=Post.Status.PUBLISHING,
+            claimed_at=timezone.now(),
+        )
+        if claimed != 1:
+            return error_response(
+                "Post is already being published.",
+                "post_already_publishing",
+                409,
+            )
+
+        post.status = Post.Status.PUBLISHING
+        publish_post(post)
+        return Response(PostSerializer(post).data)
 
     @action(detail=True, methods=["post"])
     def schedule(self, request, *args, **kwargs):

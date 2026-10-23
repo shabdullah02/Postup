@@ -2,13 +2,27 @@ from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts.models import SocialAccount
 from accounts.utils.crypto import encrypt_token
 from posts.models import Post
+from socials.adapters import AuthExpiredError, FacebookPublishResult
+
+
+class FakeAdapter:
+    def __init__(self, result="external-id", error=None):
+        self.result = result
+        self.error = error
+        self.calls = []
+
+    def post(self, account, content):
+        self.calls.append((account, content))
+        if self.error:
+            raise self.error
+        return self.result
 
 
 class APIEndpointTests(TestCase):
@@ -329,3 +343,201 @@ class APIEndpointTests(TestCase):
         due_post.refresh_from_db()
         self.assertEqual(due_post.status, Post.Status.FAILED)
         self.assertEqual(due_post.error, "Adapter failed")
+
+    def test_publish_now_publishes_draft_and_returns_result(self):
+        self.client.force_authenticate(user=self.alice)
+        adapter = FakeAdapter(result="immediate-post-id")
+
+        with patch.dict("socials.adapters.ADAPTERS", {"facebook": adapter}):
+            response = self.client.post(f"/api/posts/{self.alice_post.pk}/publish_now/")
+
+        self.alice_post.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], Post.Status.POSTED)
+        self.assertEqual(self.alice_post.status, Post.Status.POSTED)
+        self.assertEqual(self.alice_post.external_post_id, "immediate-post-id")
+        self.assertIsNotNone(self.alice_post.posted_at)
+        self.assertEqual(len(adapter.calls), 1)
+
+    def test_publish_now_publishes_scheduled_post(self):
+        self.client.force_authenticate(user=self.alice)
+        scheduled_post = Post.objects.create(
+            user=self.alice,
+            account=self.alice_account,
+            content="Scheduled immediately",
+            status=Post.Status.SCHEDULED,
+            scheduled_at=timezone.now() + timezone.timedelta(days=1),
+        )
+        adapter = FakeAdapter()
+
+        with patch.dict("socials.adapters.ADAPTERS", {"facebook": adapter}):
+            response = self.client.post(
+                f"/api/posts/{scheduled_post.pk}/publish_now/"
+            )
+
+        scheduled_post.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(scheduled_post.status, Post.Status.POSTED)
+        self.assertEqual(scheduled_post.external_post_id, "external-id")
+
+    def test_publish_now_saves_permalink_result(self):
+        self.client.force_authenticate(user=self.alice)
+        adapter = FakeAdapter(
+            result=FacebookPublishResult(
+                "permalink-post-id", "https://www.facebook.com/posts/permalink-post-id"
+            )
+        )
+
+        with patch.dict("socials.adapters.ADAPTERS", {"facebook": adapter}):
+            response = self.client.post(
+                f"/api/posts/{self.alice_post.pk}/publish_now/"
+            )
+
+        self.alice_post.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            self.alice_post.permalink_url,
+            "https://www.facebook.com/posts/permalink-post-id",
+        )
+        self.assertEqual(response.data["permalink_url"], self.alice_post.permalink_url)
+
+    def test_publish_now_adapter_failure_returns_failed_post(self):
+        self.client.force_authenticate(user=self.alice)
+        adapter = FakeAdapter(error=RuntimeError("Adapter failed"))
+
+        with patch.dict("socials.adapters.ADAPTERS", {"facebook": adapter}):
+            response = self.client.post(
+                f"/api/posts/{self.alice_post.pk}/publish_now/"
+            )
+
+        self.alice_post.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], Post.Status.FAILED)
+        self.assertEqual(self.alice_post.status, Post.Status.FAILED)
+        self.assertEqual(self.alice_post.error, "Adapter failed")
+
+    def test_publish_now_auth_expired_returns_reauth_error(self):
+        self.client.force_authenticate(user=self.alice)
+        adapter = FakeAdapter(error=AuthExpiredError("Expired"))
+
+        with patch.dict("socials.adapters.ADAPTERS", {"facebook": adapter}):
+            response = self.client.post(
+                f"/api/posts/{self.alice_post.pk}/publish_now/"
+            )
+
+        self.alice_post.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.alice_post.status, Post.Status.FAILED)
+        self.assertEqual(self.alice_post.error, "failed: reauth required")
+
+    def test_publish_now_skips_account_needing_reauth(self):
+        self.client.force_authenticate(user=self.alice)
+        self.alice_account.status = SocialAccount.Status.NEEDS_REAUTH
+        self.alice_account.save(update_fields=["status"])
+        adapter = FakeAdapter()
+
+        with patch.dict("socials.adapters.ADAPTERS", {"facebook": adapter}):
+            response = self.client.post(
+                f"/api/posts/{self.alice_post.pk}/publish_now/"
+            )
+
+        self.alice_post.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.alice_post.status, Post.Status.FAILED)
+        self.assertEqual(self.alice_post.error, "failed: reauth required")
+        self.assertEqual(adapter.calls, [])
+
+    @override_settings(INSTAGRAM_ENABLED=False)
+    def test_publish_now_instagram_disabled_fails_without_requests(self):
+        self.client.force_authenticate(user=self.alice)
+        instagram_account = SocialAccount.objects.create(
+            user=self.alice,
+            provider=SocialAccount.Provider.INSTAGRAM,
+            external_id="alice-instagram-id",
+            name="Alice Instagram",
+            token_encrypted=encrypt_token("instagram-secret"),
+        )
+        instagram_post = Post.objects.create(
+            user=self.alice,
+            account=instagram_account,
+            content="Instagram post",
+        )
+
+        with (
+            patch("accounts.providers.instagram.requests.get") as mock_get,
+            patch("accounts.providers.instagram.requests.post") as mock_post,
+        ):
+            response = self.client.post(
+                f"/api/posts/{instagram_post.pk}/publish_now/"
+            )
+
+        instagram_post.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(instagram_post.status, Post.Status.FAILED)
+        self.assertEqual(instagram_post.error, "failed: instagram disabled")
+        mock_get.assert_not_called()
+        mock_post.assert_not_called()
+
+    def test_publish_now_rejects_non_publishable_statuses(self):
+        self.client.force_authenticate(user=self.alice)
+        adapter = FakeAdapter()
+        for status in (Post.Status.POSTED, Post.Status.FAILED, Post.Status.PUBLISHING):
+            with self.subTest(status=status):
+                post = Post.objects.create(
+                    user=self.alice,
+                    account=self.alice_account,
+                    content=f"{status} post",
+                    status=status,
+                )
+                with patch.dict("socials.adapters.ADAPTERS", {"facebook": adapter}):
+                    response = self.client.post(
+                        f"/api/posts/{post.pk}/publish_now/"
+                    )
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.data["detail"],
+                    "Only draft or scheduled posts can be published.",
+                )
+        self.assertEqual(adapter.calls, [])
+
+    def test_publish_now_hides_other_users_posts_and_requires_authentication(self):
+        self.client.force_authenticate(user=self.bob)
+        response = self.client.post(
+            f"/api/posts/{self.alice_post.pk}/publish_now/"
+        )
+        self.assertEqual(response.status_code, 404)
+
+        self.client.force_authenticate(user=None)
+        response = self.client.post(
+            f"/api/posts/{self.alice_post.pk}/publish_now/"
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_publish_now_response_does_not_include_tokens(self):
+        self.client.force_authenticate(user=self.alice)
+        adapter = FakeAdapter()
+
+        with patch.dict("socials.adapters.ADAPTERS", {"facebook": adapter}):
+            response = self.client.post(
+                f"/api/posts/{self.alice_post.pk}/publish_now/"
+            )
+
+        response_body = response.content.decode()
+        self.assertNotIn("alice-token", response_body)
+        self.assertNotIn("token_encrypted", response_body)
+
+    def test_publish_now_second_call_does_not_publish_again(self):
+        self.client.force_authenticate(user=self.alice)
+        adapter = FakeAdapter()
+
+        with patch.dict("socials.adapters.ADAPTERS", {"facebook": adapter}):
+            first_response = self.client.post(
+                f"/api/posts/{self.alice_post.pk}/publish_now/"
+            )
+            second_response = self.client.post(
+                f"/api/posts/{self.alice_post.pk}/publish_now/"
+            )
+
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(second_response.status_code, 400)
+        self.assertEqual(len(adapter.calls), 1)

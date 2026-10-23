@@ -1,11 +1,9 @@
 from django.core.management.base import BaseCommand
-from django.conf import settings
 from django.utils import timezone
 
-from accounts.models import SocialAccount
-from accounts.providers.instagram import InstagramProvider
 from posts.models import Post
-from socials.adapters import ADAPTERS, AuthExpiredError, FacebookPublishResult
+from posts.services import publish_post
+from socials.adapters import ADAPTERS
 
 
 class Command(BaseCommand):
@@ -40,56 +38,5 @@ class Command(BaseCommand):
                 continue
 
             post = Post.objects.get(pk=post_id)
-            account = post.account
-            if (
-                account.id in reauth_required_account_ids
-                or account.status != SocialAccount.Status.ACTIVE
-            ):
-                reauth_required_account_ids.add(account.id)
-                post.status = Post.Status.FAILED
-                post.error = "failed: reauth required"
-                post.save(update_fields=["status", "error"])
-                self.stdout.write(f"{post_id} {post.status}")
-                continue
-
-            if (
-                account.provider == SocialAccount.Provider.INSTAGRAM
-                and not settings.INSTAGRAM_ENABLED
-            ):
-                post.status = Post.Status.FAILED
-                post.error = "failed: instagram disabled"
-                post.save(update_fields=["status", "error"])
-                self.stdout.write(f"{post_id} {post.status}")
-                continue
-
-            try:
-                if account.provider == SocialAccount.Provider.INSTAGRAM:
-                    publish_result = InstagramProvider().publish(account, post.content)
-                else:
-                    publish_result = ADAPTERS[account.provider].post(
-                        account,
-                        post.content,
-                    )
-            except AuthExpiredError:
-                reauth_required_account_ids.add(account.id)
-                post.status = Post.Status.FAILED
-                post.error = "failed: reauth required"
-                post.save(update_fields=["status", "error"])
-                self.stdout.write(f"{post_id} {post.status}")
-                continue
-            except Exception as e:
-                post.status = Post.Status.FAILED
-                post.error = str(e)
-                post.save(update_fields=["status", "error"])
-                self.stdout.write(f"{post_id} {post.status}")
-                continue
-
-            post.status = Post.Status.POSTED
-            if isinstance(publish_result, FacebookPublishResult):
-                post.external_post_id = publish_result.external_post_id
-                post.permalink_url = publish_result.permalink_url
-            else:
-                post.external_post_id = publish_result
-            post.posted_at = timezone.now()
-            post.save(update_fields=["status", "external_post_id", "permalink_url", "posted_at"])
+            publish_post(post, reauth_required_account_ids, ADAPTERS)
             self.stdout.write(f"{post_id} {post.status}")
