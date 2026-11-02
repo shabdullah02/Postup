@@ -25,6 +25,19 @@ class AuthExpiredError(PublishError):
     pass
 
 
+def graph_error(response, token: str) -> dict:
+    try:
+        error_payload = response.json().get("error", {})
+    except (ValueError, AttributeError, TypeError):
+        error_payload = {}
+    if not isinstance(error_payload, dict):
+        error_payload = {}
+    message = error_payload.get("message")
+    if isinstance(message, str) and token:
+        message = message.replace(token, "[redacted]")
+    return {**error_payload, "message": message}
+
+
 class FacebookAdapter:
     def post(self, account: SocialAccount, content: str) -> FacebookPublishResult:
         if account.provider != SocialAccount.Provider.FACEBOOK:
@@ -38,7 +51,7 @@ class FacebookAdapter:
             raise AuthExpiredError("Stored Facebook token is invalid; reauth required.") from exc
 
         url = (
-            f"https://graph.facebook.com/{settings.FB_GRAPH_VERSION}/"
+            f"{settings.FB_GRAPH_BASE_URL}/{settings.FB_GRAPH_VERSION}/"
             f"{account.external_id}/feed"
         )
         payload = {"message": content, "access_token": token}
@@ -47,10 +60,7 @@ class FacebookAdapter:
         response = requests.post(url, data=payload, timeout=20)
 
         if not response.ok:
-            try:
-                error_payload = response.json().get("error", {})
-            except ValueError:
-                error_payload = {}
+            error_payload = graph_error(response, token)
             code = error_payload.get("code")
             if code == 190:
                 account.status = SocialAccount.Status.NEEDS_REAUTH
@@ -62,7 +72,7 @@ class FacebookAdapter:
         permalink_url = None
         try:
             permalink_response = requests.get(
-                f"https://graph.facebook.com/{settings.FB_GRAPH_VERSION}/{external_post_id}",
+                f"{settings.FB_GRAPH_BASE_URL}/{settings.FB_GRAPH_VERSION}/{external_post_id}",
                 params={"fields": "permalink_url", "access_token": token},
                 timeout=20,
             )

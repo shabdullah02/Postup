@@ -1,6 +1,7 @@
 from rest_framework.authentication import SessionAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 
+from billing.entitlements import is_exempt
 from billing.models import Subscription
 
 
@@ -13,6 +14,9 @@ class SubscriptionSessionAuthentication(SessionAuthentication):
         user, auth = result
         if not user.is_active:
             raise AuthenticationFailed("This account is deactivated.", code="account_deactivated")
+
+        if is_exempt(user):
+            return user, auth
 
         try:
             subscription = user.subscription

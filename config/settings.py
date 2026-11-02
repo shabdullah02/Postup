@@ -28,8 +28,10 @@ FB_REDIRECT_URI = os.getenv(
     "FB_REDIRECT_URI", "http://localhost:8000/api/auth/callback/facebook/"
 )
 FB_GRAPH_VERSION = os.getenv("FB_GRAPH_VERSION", "v21.0")
+FB_GRAPH_BASE_URL = os.getenv("FB_GRAPH_BASE_URL", "https://graph.facebook.com")
+FB_DIALOG_BASE_URL = os.getenv("FB_DIALOG_BASE_URL", "https://www.facebook.com")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
-INSTAGRAM_ENABLED = os.getenv("IG_ENABLED", "false").lower() == "true"
+INSTAGRAM_ENABLED = os.getenv("IG_ENABLED", "true").lower() == "true"
 DEBUG = os.getenv("DEBUG", "True").lower() in {"true", "1", "yes"}
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
@@ -189,6 +191,9 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'registration': '5/hour',
+        'email_verification': '3/hour',
+        'password_reset': '5/hour',
+        'login': '10/minute',
     },
     'EXCEPTION_HANDLER': 'config.api.api_exception_handler',
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
@@ -207,10 +212,13 @@ STATIC_URL = 'static/'
 
 
 # Email
-# https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
-
-MAILERS = {
-    'default': {
-        'BACKEND': 'django.core.mail.backends.console.EmailBackend',
-    },
-}
+if DEBUG:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_HOST = os.getenv('EMAIL_HOST', '')
+    EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+    EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+    EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+    EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'true').lower() in {'true', '1', 'yes'}
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'Postup <noreply@localhost>')

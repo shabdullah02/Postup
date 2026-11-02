@@ -35,7 +35,7 @@ class Command(BaseCommand):
 
             try:
                 response = requests.get(
-                    f"https://graph.facebook.com/{settings.FB_GRAPH_VERSION}/{post.external_post_id}",
+                    f"{settings.FB_GRAPH_BASE_URL}/{settings.FB_GRAPH_VERSION}/{post.external_post_id}",
                     params={"fields": "id", "access_token": token},
                     timeout=20,
                 )

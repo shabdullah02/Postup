@@ -10,6 +10,7 @@ from posts.models import Post
 from posts.serializers import PostSerializer
 from posts.services import publish_post
 from billing.entitlements import ensure_within_plan_limit
+from accounts.verification import ensure_email_verified
 from config.api import error_response
 
 
@@ -92,6 +93,7 @@ class PostViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def schedule(self, request, *args, **kwargs):
+        ensure_email_verified(request.user)
         post = self.get_object()
         scheduled_at = request.data.get("scheduled_at")
         if scheduled_at is None:

@@ -19,11 +19,14 @@ from django.urls import include, path
 from accounts.views import SocialAccountsListView
 from billing.admin_api import (
     AdminDeactivateUserView,
+    AdminAuditLogView,
     AdminReactivateUserView,
+    AdminResetTwoFactorView,
     AdminStatsView,
     AdminSubscriptionUpdateView,
     AdminUserDetailView,
     AdminUsersView,
+    AdminVerifyEmailView,
 )
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
@@ -35,7 +38,10 @@ urlpatterns = [
     path('api/admin/users/<int:user_id>/subscription/', AdminSubscriptionUpdateView.as_view(), name='admin-user-subscription'),
     path('api/admin/users/<int:user_id>/deactivate/', AdminDeactivateUserView.as_view(), name='admin-user-deactivate'),
     path('api/admin/users/<int:user_id>/reactivate/', AdminReactivateUserView.as_view(), name='admin-user-reactivate'),
+    path('api/admin/users/<int:user_id>/reset-2fa/', AdminResetTwoFactorView.as_view(), name='admin-user-reset-2fa'),
+    path('api/admin/users/<int:user_id>/verify-email/', AdminVerifyEmailView.as_view(), name='admin-user-verify-email'),
     path('api/admin/users/<int:user_id>/', AdminUserDetailView.as_view(), name='admin-user-detail'),
+    path('api/admin/audit-log/', AdminAuditLogView.as_view(), name='admin-audit-log'),
     path('api/admin/stats/', AdminStatsView.as_view(), name='admin-stats'),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(url_name='schema'), name='swagger-ui'),

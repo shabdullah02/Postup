@@ -26,7 +26,13 @@ class Subscription(models.Model):
         choices=Status.choices,
         default=Status.TRIALING,
     )
+    started_at = models.DateTimeField(null=True, blank=True)
+    trial_ends_at = models.DateTimeField(null=True, blank=True)
     current_period_end = models.DateTimeField(null=True, blank=True)
+    next_billing_date = models.DateTimeField(null=True, blank=True)
+    cancel_at_period_end = models.BooleanField(default=False)
+    canceled_at = models.DateTimeField(null=True, blank=True)
+    last_payment_at = models.DateTimeField(null=True, blank=True)
     stripe_customer_id = models.CharField(max_length=255, blank=True)
     stripe_subscription_id = models.CharField(max_length=255, blank=True)
     updated_at = models.DateTimeField(auto_now=True)

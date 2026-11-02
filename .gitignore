@@ -1,5 +1,21 @@
+# Environment variables and secrets
 .env
-.venv/
-__pycache__/
-*.egg-info/
+.env.*
+!.env.example
+
+# Session cookies and authentication data
+jar
+jar.txt
+cookies.txt
+
+# Local database
 db.sqlite3
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/

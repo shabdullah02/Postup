@@ -88,7 +88,10 @@ def test_facebook_oauth_settings_require_numeric_app_id_and_secret():
 
 @pytest.fixture
 def user():
-    return get_user_model().objects.create_user(username="fb-user", password="pw")
+    user = get_user_model().objects.create_user(username="fb-user", password="pw")
+    user.profile.email_verified = True
+    user.profile.save(update_fields=["email_verified"])
+    return user
 
 
 @pytest.fixture

@@ -68,6 +68,8 @@ def test_new_user_facebook_connect_publish_expiry_and_reconnect():
         username="fresh-facebook-user",
         password="test-password",
     )
+    user.profile.email_verified = True
+    user.profile.save(update_fields=["email_verified"])
     client = APIClient()
     client.force_authenticate(user=user)
     responses = []

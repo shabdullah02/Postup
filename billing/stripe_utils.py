@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from django.conf import settings
+from django.core.mail import send_mail
 from django.utils import timezone as django_timezone
 from rest_framework import status
 from rest_framework.exceptions import APIException
@@ -92,7 +93,23 @@ def _apply_subscription_event(event_type, event_object):
     period_end = _period_end(event_object)
     if period_end:
         subscription.current_period_end = period_end
+        subscription.next_billing_date = period_end
+    cancel_at_period_end = _get(event_object, "cancel_at_period_end")
+    if cancel_at_period_end is not None:
+        subscription.cancel_at_period_end = bool(cancel_at_period_end)
+    canceled_at = _get(event_object, "canceled_at")
+    if canceled_at:
+        subscription.canceled_at = datetime.fromtimestamp(canceled_at, tz=timezone.utc)
+    if event_type.endswith(".deleted"):
+        subscription.canceled_at = subscription.canceled_at or django_timezone.now()
+        subscription.cancel_at_period_end = False
+    if subscription.started_at is None:
+        subscription.started_at = django_timezone.now()
     subscription.save()
+    if event_type == "customer.subscription.trial_will_end":
+        from accounts.emails import send_trial_ending_email
+
+        send_trial_ending_email(subscription.user)
 
 
 def _apply_invoice_event(event_type, invoice):
@@ -113,11 +130,22 @@ def _apply_invoice_event(event_type, invoice):
 
     if event_type == "invoice.payment_failed":
         subscription.status = Subscription.Status.PAST_DUE
+        from accounts.emails import send_payment_failed_email
+
+        send_payment_failed_email(subscription.user)
     elif event_type in {"invoice.paid", "invoice.payment_succeeded"}:
         if subscription.status != Subscription.Status.CANCELED:
             subscription.status = Subscription.Status.ACTIVE
+        paid_at = _get(invoice, "status_transitions", {}) or {}
+        paid_at = _get(paid_at, "paid_at") or _get(invoice, "created")
+        if paid_at:
+            subscription.last_payment_at = datetime.fromtimestamp(paid_at, tz=timezone.utc)
     if subscription_id:
         subscription.stripe_subscription_id = subscription_id
+    period_end = _get(invoice, "period_end")
+    if period_end:
+        subscription.current_period_end = datetime.fromtimestamp(period_end, tz=timezone.utc)
+        subscription.next_billing_date = subscription.current_period_end
     subscription.save()
 
 

@@ -12,6 +12,7 @@ class PostSerializer(serializers.ModelSerializer):
             "user",
             "account",
             "content",
+            "image_url",
             "scheduled_at",
             "status",
             "error",

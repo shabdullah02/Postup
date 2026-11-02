@@ -19,11 +19,14 @@ pytestmark = pytest.mark.django_db
 
 @pytest.fixture
 def user():
-    return get_user_model().objects.create_user(
+    user = get_user_model().objects.create_user(
         username="billing-user",
         password="Valid-password-for-billing-6!",
         email="billing@example.com",
     )
+    user.profile.email_verified = True
+    user.profile.save(update_fields=["email_verified"])
+    return user
 
 
 @pytest.fixture

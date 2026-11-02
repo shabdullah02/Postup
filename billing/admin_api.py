@@ -14,6 +14,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import SocialAccount
+from accounts.models import UserProfile
 from billing.models import AdminAuditLog, Subscription
 from billing.stripe_utils import get_stripe
 from posts.models import Post
@@ -102,6 +103,19 @@ def _serialize_user(user):
     }
 
 
+def _serialize_user_detail(user):
+    result = _serialize_user(user)
+    profile = getattr(user, "profile", None)
+    subscription = getattr(user, "subscription", None)
+    result.update({
+        "email_verified": bool(profile and profile.email_verified),
+        "totp_enabled": bool(profile and profile.totp_enabled),
+        "trial_ends_at": subscription.trial_ends_at if subscription else None,
+        "cancel_at_period_end": subscription.cancel_at_period_end if subscription else False,
+    })
+    return result
+
+
 def _audit(actor, target, action, details=None):
     AdminAuditLog.objects.create(
         who=actor,
@@ -142,9 +156,9 @@ class AdminUsersView(generics.ListAPIView):
 class AdminUserDetailView(ProtectedUserAPIView):
     permission_classes = [IsAdminUser]
 
-    @extend_schema(operation_id="admin_user_detail", responses={200: AdminUserSerializer})
+    @extend_schema(operation_id="admin_user_detail", responses={200: OpenApiTypes.OBJECT})
     def get(self, request, user_id):
-        return Response(_serialize_user(_get_user(user_id)))
+        return Response(_serialize_user_detail(_get_user(user_id)))
 
     @extend_schema(responses={204: None, 400: OpenApiTypes.OBJECT})
     def delete(self, request, user_id):
@@ -327,3 +341,77 @@ class AdminStatsView(APIView):
                 | Q(claimed_at__isnull=True, created_at__gte=failed_since)
             ).count(),
         })
+
+
+class AdminAuditPagination(PageNumberPagination):
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 200
+
+
+def _reject_protected_admin_target(target, request):
+    if target.is_superuser:
+        raise ProtectedUserValidationError({
+            "detail": "Superuser accounts cannot be modified from the admin panel.",
+            "code": "protected_user",
+        })
+    _self_admin_error(target, request, "modify")
+
+
+@extend_schema_view(
+    post=extend_schema(responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT})
+)
+class AdminResetTwoFactorView(ProtectedUserAPIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, user_id):
+        user = _get_user(user_id)
+        _reject_protected_admin_target(user, request)
+        profile = user.profile
+        profile.totp_enabled = False
+        profile.totp_secret_encrypted = b""
+        profile.recovery_codes = []
+        profile.save(update_fields=["totp_enabled", "totp_secret_encrypted", "recovery_codes"])
+        _delete_user_sessions(user.pk)
+        _audit(request.user, user, "admin_two_factor_reset")
+        return Response({"totp_enabled": False})
+
+
+@extend_schema_view(
+    post=extend_schema(responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT})
+)
+class AdminVerifyEmailView(ProtectedUserAPIView):
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, user_id):
+        user = _get_user(user_id)
+        _reject_protected_admin_target(user, request)
+        profile = user.profile
+        profile.email_verified = True
+        profile.email_verified_at = timezone.now()
+        profile.save(update_fields=["email_verified", "email_verified_at"])
+        _audit(request.user, user, "admin_email_verified")
+        return Response({"email_verified": True})
+
+
+@extend_schema_view(get=extend_schema(responses={200: OpenApiTypes.OBJECT}))
+class AdminAuditLogView(generics.ListAPIView):
+    permission_classes = [IsAdminUser]
+    pagination_class = AdminAuditPagination
+
+    def get_queryset(self):
+        return AdminAuditLog.objects.select_related("who", "target").all()
+
+    def list(self, request, *args, **kwargs):
+        page = self.paginate_queryset(self.get_queryset())
+        return self.get_paginated_response([
+            {
+                "id": entry.pk,
+                "who_identifier": entry.who_identifier,
+                "target_identifier": entry.target_identifier,
+                "action": entry.action,
+                "timestamp": entry.timestamp,
+                "details": entry.details,
+            }
+            for entry in page
+        ])

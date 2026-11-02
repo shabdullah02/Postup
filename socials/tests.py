@@ -19,6 +19,8 @@ class FacebookOAuthAPITests(TestCase):
             username="alice",
             password="password",
         )
+        cls.user.profile.email_verified = True
+        cls.user.profile.save(update_fields=["email_verified"])
 
     def setUp(self):
         self.client = APIClient()

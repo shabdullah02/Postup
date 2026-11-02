@@ -31,6 +31,9 @@ class APIEndpointTests(TestCase):
         User = get_user_model()
         cls.alice = User.objects.create_user(username="alice", password="password")
         cls.bob = User.objects.create_user(username="bob", password="password")
+        for user in (cls.alice, cls.bob):
+            user.profile.email_verified = True
+            user.profile.save(update_fields=["email_verified"])
 
         cls.alice_account = SocialAccount.objects.create(
             user=cls.alice,

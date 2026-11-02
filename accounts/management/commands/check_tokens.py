@@ -26,7 +26,7 @@ class Command(BaseCommand):
                     "Stored Facebook token is invalid; reauth required."
                 ) from exc
 
-            url = f"https://graph.facebook.com/{settings.FB_GRAPH_VERSION}/debug_token"
+            url = f"{settings.FB_GRAPH_BASE_URL}/{settings.FB_GRAPH_VERSION}/debug_token"
             response = requests.get(
                 url,
                 params={

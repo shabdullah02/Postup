@@ -18,6 +18,10 @@ class PlanLimitExceeded(APIException):
     default_code = "plan_limit"
 
 
+def is_exempt(user):
+    return bool(user and getattr(user, "is_superuser", False))
+
+
 def get_subscription(user):
     try:
         return user.subscription
@@ -26,9 +30,21 @@ def get_subscription(user):
 
 
 def ensure_subscription_active(user):
+    if is_exempt(user):
+        try:
+            return user.subscription
+        except Subscription.DoesNotExist:
+            return None
+
     subscription = get_subscription(user)
     if subscription.status not in {Subscription.Status.ACTIVE, Subscription.Status.TRIALING}:
         raise PlanLimitExceeded("An active or trialing subscription is required.")
+    if (
+        subscription.status == Subscription.Status.TRIALING
+        and subscription.trial_ends_at
+        and subscription.trial_ends_at <= timezone.now()
+    ):
+        raise PlanLimitExceeded("Your free trial has ended.")
     if subscription.current_period_end and subscription.current_period_end <= timezone.now():
         raise PlanLimitExceeded("Your subscription period has ended.")
     return subscription
@@ -53,6 +69,12 @@ def get_usage(user, metric):
 
 
 def ensure_within_plan_limit(user, metric, additional=1):
+    if is_exempt(user):
+        try:
+            return user.subscription
+        except Subscription.DoesNotExist:
+            return None
+
     subscription = ensure_subscription_active(user)
     limit = PLAN_LIMITS[subscription.plan][metric]
     usage = get_usage(user, metric)
