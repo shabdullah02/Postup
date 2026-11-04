@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 """
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
@@ -31,11 +32,24 @@ FB_GRAPH_VERSION = os.getenv("FB_GRAPH_VERSION", "v21.0")
 FB_GRAPH_BASE_URL = os.getenv("FB_GRAPH_BASE_URL", "https://graph.facebook.com")
 FB_DIALOG_BASE_URL = os.getenv("FB_DIALOG_BASE_URL", "https://www.facebook.com")
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+_frontend_parts = urlsplit(FRONTEND_URL)
+FRONTEND_ORIGIN = f"{_frontend_parts.scheme}://{_frontend_parts.netloc}"
+SITE_ID = int(os.getenv("SITE_ID", "1"))
+SITE_DOMAIN = os.getenv("SITE_DOMAIN", _frontend_parts.hostname or "localhost")
+if SITE_DOMAIN.casefold() == "example.com":
+    raise ImproperlyConfigured("SITE_DOMAIN must not be example.com.")
 INSTAGRAM_ENABLED = os.getenv("IG_ENABLED", "true").lower() == "true"
 DEBUG = os.getenv("DEBUG", "True").lower() in {"true", "1", "yes"}
+BILLING_PROVIDER = os.getenv("BILLING_PROVIDER", "mock").strip().lower()
+if BILLING_PROVIDER not in {"mock", "stripe"}:
+    raise ImproperlyConfigured("BILLING_PROVIDER must be 'mock' or 'stripe'.")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_PUBLISHABLE_KEY = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRICE_ID_PRO = os.getenv("STRIPE_PRICE_ID_PRO", "")
 STRIPE_PRO_PRICE_ID = os.getenv("STRIPE_PRO_PRICE_ID", "")
+if not STRIPE_PRO_PRICE_ID:
+    STRIPE_PRO_PRICE_ID = STRIPE_PRICE_ID_PRO
 STRIPE_AGENCY_PRICE_ID = os.getenv("STRIPE_AGENCY_PRICE_ID", "")
 
 SECRET_KEY = os.getenv("SECRET_KEY")
@@ -76,6 +90,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django.contrib.sites',
     'corsheaders',
     'rest_framework',
     'drf_spectacular',
@@ -105,6 +120,8 @@ CORS_ALLOWED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+if FRONTEND_ORIGIN not in CORS_ALLOWED_ORIGINS:
+    CORS_ALLOWED_ORIGINS.append(FRONTEND_ORIGIN)
 CORS_ALLOW_CREDENTIALS = True
 CSRF_TRUSTED_ORIGINS = [
     origin.strip()
@@ -113,6 +130,8 @@ CSRF_TRUSTED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+if FRONTEND_ORIGIN not in CSRF_TRUSTED_ORIGINS:
+    CSRF_TRUSTED_ORIGINS.append(FRONTEND_ORIGIN)
 
 SESSION_COOKIE_NAME = "postup_sessionid"
 CSRF_COOKIE_NAME = "postup_csrftoken"
@@ -194,6 +213,8 @@ REST_FRAMEWORK = {
         'email_verification': '3/hour',
         'password_reset': '5/hour',
         'login': '10/minute',
+        'billing_setup_intent': '5/hour',
+        'billing_subscribe': '5/hour',
     },
     'EXCEPTION_HANDLER': 'config.api.api_exception_handler',
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
@@ -212,13 +233,13 @@ STATIC_URL = 'static/'
 
 
 # Email
-if DEBUG:
-    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
-else:
+EMAIL_HOST = os.getenv('EMAIL_HOST', '')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'true').strip().lower() in {'true', '1', 'yes', 'on'}
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+if EMAIL_HOST:
     EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-    EMAIL_HOST = os.getenv('EMAIL_HOST', '')
-    EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
-    EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
-    EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
-    EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'true').lower() in {'true', '1', 'yes'}
+else:
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'Postup <noreply@localhost>')

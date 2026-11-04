@@ -11,6 +11,7 @@ class Subscription(models.Model):
     class Status(models.TextChoices):
         TRIALING = "trialing", "Trialing"
         ACTIVE = "active", "Active"
+        INCOMPLETE = "incomplete", "Incomplete"
         PAST_DUE = "past_due", "Past due"
         CANCELED = "canceled", "Canceled"
         SUSPENDED = "suspended", "Suspended"
@@ -33,8 +34,12 @@ class Subscription(models.Model):
     cancel_at_period_end = models.BooleanField(default=False)
     canceled_at = models.DateTimeField(null=True, blank=True)
     last_payment_at = models.DateTimeField(null=True, blank=True)
-    stripe_customer_id = models.CharField(max_length=255, blank=True)
-    stripe_subscription_id = models.CharField(max_length=255, blank=True)
+    stripe_customer_id = models.CharField(max_length=255, blank=True, null=True)
+    stripe_subscription_id = models.CharField(max_length=255, blank=True, null=True)
+    card_brand = models.CharField(max_length=20, null=True, blank=True)
+    card_last4 = models.CharField(max_length=4, null=True, blank=True)
+    card_exp_month = models.PositiveSmallIntegerField(null=True, blank=True)
+    card_exp_year = models.PositiveSmallIntegerField(null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):

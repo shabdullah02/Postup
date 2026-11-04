@@ -18,6 +18,14 @@ class UserProfile(models.Model):
         return f"Profile for {self.user_id}"
 
 
+def get_profile(user):
+    profile, _ = UserProfile.objects.get_or_create(
+        user=user,
+        defaults={"email_verified": False},
+    )
+    return profile
+
+
 class SocialAccount(models.Model):
     class Provider(models.TextChoices):
         FACEBOOK = "facebook", "Facebook"

@@ -93,8 +93,8 @@ class PostViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def schedule(self, request, *args, **kwargs):
-        ensure_email_verified(request.user)
         post = self.get_object()
+        ensure_email_verified(request.user)
         scheduled_at = request.data.get("scheduled_at")
         if scheduled_at is None:
             return error_response("scheduled_at is required.", "validation_error", 400)

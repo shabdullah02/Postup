@@ -6,10 +6,12 @@ from unittest.mock import Mock, patch
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.test import TestCase
+from django.urls import reverse
 from rest_framework.test import APIClient
 
 from accounts.models import SocialAccount
 from accounts.utils.crypto import decrypt_token, encrypt_token
+from posts.models import Post
 
 
 class FacebookOAuthAPITests(TestCase):
@@ -89,6 +91,83 @@ class FacebookOAuthAPITests(TestCase):
 
         self.assertNotEqual(bytes(account.token_encrypted), b"plain-text-token")
         self.assertEqual(decrypt_token(account.token_encrypted), "plain-text-token")
+
+
+class SocialAccountDeletionTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        user_model = get_user_model()
+        cls.user = user_model.objects.create_user(username="delete-owner")
+        cls.other_user = user_model.objects.create_user(username="other-owner")
+
+    def setUp(self):
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def create_account(self, user, external_id):
+        return SocialAccount.objects.create(
+            user=user,
+            provider=SocialAccount.Provider.FACEBOOK,
+            external_id=external_id,
+            name="Test account",
+            token_encrypted=encrypt_token("secret-token"),
+        )
+
+    def test_owner_can_delete_account_with_only_draft_and_posted_posts(self):
+        account = self.create_account(self.user, "deleteable-account")
+        Post.objects.create(account=account, user=self.user, content="Draft")
+        Post.objects.create(
+            account=account,
+            user=self.user,
+            content="Published",
+            status=Post.Status.POSTED,
+        )
+
+        response = self.client.delete(
+            reverse("social-account-detail", kwargs={"pk": account.pk})
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(response.content, b"")
+        self.assertFalse(SocialAccount.objects.filter(pk=account.pk).exists())
+        self.assertNotIn("secret-token", response.content.decode())
+
+    def test_owner_cannot_delete_another_users_account(self):
+        account = self.create_account(self.other_user, "another-users-account")
+
+        response = self.client.delete(
+            reverse("social-account-detail", kwargs={"pk": account.pk})
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(SocialAccount.objects.filter(pk=account.pk).exists())
+        self.assertNotIn("secret-token", response.content.decode())
+
+    def test_account_with_scheduled_post_cannot_be_deleted(self):
+        account = self.create_account(self.user, "scheduled-account")
+        Post.objects.create(
+            account=account,
+            user=self.user,
+            content="Scheduled",
+            status=Post.Status.SCHEDULED,
+        )
+
+        response = self.client.delete(
+            reverse("social-account-detail", kwargs={"pk": account.pk})
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.data,
+            {
+                "detail": (
+                    "This account has 1 scheduled posts. "
+                    "Delete or reschedule them first."
+                )
+            },
+        )
+        self.assertTrue(SocialAccount.objects.filter(pk=account.pk).exists())
+        self.assertNotIn("secret-token", response.content.decode())
 
 
 class AIGenerateAPITests(TestCase):

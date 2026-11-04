@@ -121,6 +121,14 @@ def test_registration_rejects_weak_password():
 
 def test_me_includes_staff_status(authenticated_client):
     response = authenticated_client.get("/api/auth/me/")
+    user = get_user_model().objects.get(username="oauth-callback-user")
 
     assert response.status_code == 200
-    assert response.data["is_staff"] is False
+    assert response.data == {
+        "id": user.id,
+        "username": "oauth-callback-user",
+        "is_staff": False,
+        "is_superuser": False,
+        "email_verified": False,
+        "totp_enabled": False,
+    }

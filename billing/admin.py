@@ -55,6 +55,9 @@ class BillingUserAdmin(UserAdmin):
         }
         changed = formset.save()
         for subscription in changed:
+            if subscription.next_billing_date != subscription.current_period_end:
+                subscription.next_billing_date = subscription.current_period_end
+                subscription.save(update_fields=["next_billing_date"])
             before = previous.get(subscription.pk)
             after = {
                 "plan": subscription.plan,
@@ -91,6 +94,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
     actions = ("suspend_subscriptions", "activate_subscriptions", "extend_30_days")
 
     def save_model(self, request, obj, form, change):
+        obj.next_billing_date = obj.current_period_end
         before = None
         if change:
             previous = Subscription.objects.get(pk=obj.pk)
@@ -145,6 +149,7 @@ class SubscriptionAdmin(admin.ModelAdmin):
                 if base < timezone.now():
                     base = timezone.now()
                 subscription.current_period_end = base + timedelta(days=30)
+                subscription.next_billing_date = subscription.current_period_end
                 details["current_period_end"] = subscription.current_period_end.isoformat()
                 audit_action = "subscription_extended_30_days"
             subscription.save()

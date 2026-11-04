@@ -23,10 +23,16 @@ def is_exempt(user):
 
 
 def get_subscription(user):
-    try:
-        return user.subscription
-    except Subscription.DoesNotExist:
-        raise PlanLimitExceeded("A subscription is required to use this feature.")
+    subscription, _ = Subscription.objects.get_or_create(
+        user=user,
+        defaults={
+            "plan": Subscription.Plan.FREE,
+            "status": Subscription.Status.TRIALING,
+            "started_at": timezone.now(),
+            "trial_ends_at": timezone.now() + timedelta(days=14),
+        },
+    )
+    return subscription
 
 
 def ensure_subscription_active(user):
@@ -45,7 +51,7 @@ def ensure_subscription_active(user):
         and subscription.trial_ends_at <= timezone.now()
     ):
         raise PlanLimitExceeded("Your free trial has ended.")
-    if subscription.current_period_end and subscription.current_period_end <= timezone.now():
+    if subscription.current_period_end is not None and subscription.current_period_end <= timezone.now():
         raise PlanLimitExceeded("Your subscription period has ended.")
     return subscription
 

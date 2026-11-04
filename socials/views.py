@@ -1,14 +1,46 @@
 import logging
 
 from rest_framework import status
+from rest_framework.authentication import SessionAuthentication
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from drf_spectacular.utils import OpenApiTypes, extend_schema_view, extend_schema
 
+from accounts.models import SocialAccount
+from posts.models import Post
 from socials.throttles import AIGenerateThrottle
 
 logger = logging.getLogger(__name__)
+
+
+class SocialAccountDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+    authentication_classes = [SessionAuthentication]
+
+    def delete(self, request, pk):
+        try:
+            account = SocialAccount.objects.get(id=pk, user=request.user)
+        except SocialAccount.DoesNotExist:
+            return Response(status=status.HTTP_404_NOT_FOUND)
+
+        scheduled_posts = Post.objects.filter(
+            account=account,
+            status__in=[Post.Status.SCHEDULED, Post.Status.PUBLISHING],
+        ).count()
+        if scheduled_posts:
+            return Response(
+                {
+                    "detail": (
+                        f"This account has {scheduled_posts} scheduled posts. "
+                        "Delete or reschedule them first."
+                    )
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        account.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 @extend_schema_view(

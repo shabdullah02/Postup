@@ -6,7 +6,7 @@ from urllib.parse import quote
 import requests
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model, login, logout
-from django.contrib.auth import get_user_model, update_session_auth_hash
+from django.contrib.auth import update_session_auth_hash
 from django.contrib.auth.tokens import default_token_generator
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -35,7 +35,7 @@ from accounts.emails import (
     send_verification_email,
 )
 from accounts.email_tokens import read_verification_token
-from accounts.models import SocialAccount
+from accounts.models import SocialAccount, get_profile
 from accounts.providers.instagram import InstagramProvider
 from accounts.serializers import (
     ChangePasswordSerializer,
@@ -50,7 +50,6 @@ from accounts.two_factor import (
     clear_totp_failures,
     consume_recovery_code,
     generate_recovery_codes,
-    get_totp_secret,
     pending_login_expiry,
     record_totp_failure,
     store_totp_secret,
@@ -59,7 +58,12 @@ from accounts.two_factor import (
 )
 from accounts.throttles import SuperuserExemptScopedRateThrottle
 from billing.authentication import SubscriptionSessionAuthentication
-from billing.entitlements import ensure_subscription_active, ensure_within_plan_limit, is_exempt
+from billing.entitlements import (
+    ensure_subscription_active,
+    ensure_within_plan_limit,
+    get_subscription,
+    is_exempt,
+)
 from billing.models import AdminAuditLog
 from billing.stripe_utils import get_stripe
 from config.api import error_response
@@ -123,13 +127,13 @@ class LoginView(APIView):
 
             cache.delete(lockout_key)
 
-        if not is_exempt(user) and user.subscription.status == "suspended":
+        if not is_exempt(user) and get_subscription(user).status == "suspended":
             return Response(
                 {"detail": "This account is suspended.", "code": "account_suspended"},
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if not is_exempt(user) and user.profile.totp_enabled:
+        if not is_exempt(user) and get_profile(user).totp_enabled:
             logout(request)
             request.session[PENDING_LOGIN_KEY] = user.pk
             request.session[PENDING_LOGIN_EXPIRES_KEY] = pending_login_expiry()
@@ -161,14 +165,15 @@ class TwoFactorLoginView(APIView):
             request.session.pop(PENDING_LOGIN_EXPIRES_KEY, None)
             return error_response("The two-factor login challenge expired.", "challenge_expired", 400)
         user = get_user_model().objects.filter(pk=user_id, is_active=True).first()
-        if not user or user.is_superuser or not user.profile.totp_enabled:
+        if not user or is_exempt(user) or not get_profile(user).totp_enabled:
             return error_response("The two-factor login challenge is invalid.", "invalid_challenge", 400)
         ip_address = request.META.get("REMOTE_ADDR", "")
         if totp_attempts_exhausted(user.pk, ip_address):
             return error_response("Too many invalid codes. Try again later.", "throttled", 429)
         code = request.data.get("code")
         recovery_code = request.data.get("recovery_code")
-        valid = verify_totp(user.profile, code) if code else consume_recovery_code(user.profile, recovery_code)
+        profile = get_profile(user)
+        valid = verify_totp(profile, code) if code else consume_recovery_code(profile, recovery_code)
         if not valid:
             record_totp_failure(user.pk, ip_address)
             return error_response("The two-factor code is invalid.", "invalid_two_factor_code", 400)
@@ -180,13 +185,13 @@ class TwoFactorLoginView(APIView):
         return Response({"id": user.id, "username": user.username})
 
 
-@extend_schema_view(post=extend_schema(responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT}))
+@extend_schema_view(post=extend_schema(request=OpenApiTypes.NONE, responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT}))
 class TwoFactorSetupView(APIView):
     authentication_classes = [SubscriptionSessionAuthentication]
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        profile = request.user.profile
+        profile = get_profile(request.user)
         if profile.totp_enabled:
             return error_response("Two-factor authentication is already enabled.", "two_factor_enabled", 400)
         import pyotp
@@ -211,7 +216,7 @@ class TwoFactorEnableView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        profile = request.user.profile
+        profile = get_profile(request.user)
         if profile.totp_enabled or not verify_totp(profile, request.data.get("code")):
             return error_response("The two-factor code is invalid.", "invalid_two_factor_code", 400)
         plaintext_codes, encoded_codes = generate_recovery_codes()
@@ -233,7 +238,7 @@ class TwoFactorDisableView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        profile = request.user.profile
+        profile = get_profile(request.user)
         if not request.user.check_password(request.data.get("password", "")):
             return error_response("Password is incorrect.", "invalid_password", 400)
         if not profile.totp_enabled or not verify_totp(profile, request.data.get("code")):
@@ -257,7 +262,7 @@ class TwoFactorRecoveryCodesView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        profile = request.user.profile
+        profile = get_profile(request.user)
         if not request.user.check_password(request.data.get("password", "")):
             return error_response("Password is incorrect.", "invalid_password", 400)
         if not profile.totp_enabled or not verify_totp(profile, request.data.get("code")):
@@ -309,7 +314,7 @@ class RegistrationView(APIView):
         )
 
 
-@extend_schema_view(post=extend_schema(responses={200: OpenApiTypes.OBJECT}))
+@extend_schema_view(post=extend_schema(request=OpenApiTypes.NONE, responses={200: OpenApiTypes.OBJECT}))
 class LogoutView(APIView):
     authentication_classes = [SubscriptionSessionAuthentication]
     permission_classes = [IsAuthenticated]
@@ -325,11 +330,17 @@ class MeView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        return Response({
-            "id": request.user.id,
-            "username": request.user.username,
-            "is_staff": request.user.is_staff,
-        })
+        profile = get_profile(request.user)
+        return Response(
+            {
+                "id": request.user.id,
+                "username": request.user.username,
+                "is_staff": request.user.is_staff,
+                "is_superuser": request.user.is_superuser,
+                "email_verified": profile.email_verified,
+                "totp_enabled": profile.totp_enabled,
+            }
+        )
 
 
 def _audit_account_action(actor, target, action, details=None):
@@ -356,7 +367,7 @@ class ProfileView(APIView):
 
     def get(self, request):
         data = ProfileSerializer(request.user).data
-        data["email_verified"] = request.user.profile.email_verified
+        data["email_verified"] = get_profile(request.user).email_verified
         return Response(data)
 
     def patch(self, request):
@@ -367,7 +378,7 @@ class ProfileView(APIView):
         user = serializer.save()
         changed_email = user.email != old_email
         if changed_email:
-            profile = user.profile
+            profile = get_profile(user)
             profile.email_verified = False
             profile.email_verified_at = None
             profile.save(update_fields=["email_verified", "email_verified_at"])
@@ -376,7 +387,7 @@ class ProfileView(APIView):
             send_verification_email(user)
             _audit_account_action(request.user, user, "email_changed")
         data = ProfileSerializer(user).data
-        data["email_verified"] = user.profile.email_verified
+        data["email_verified"] = get_profile(user).email_verified
         return Response(data)
 
 
@@ -436,7 +447,11 @@ class DeleteAccountView(APIView):
         if request.data.get("confirm") != user.get_username():
             return error_response("Provide your username to confirm deletion.", "confirmation_required", 400)
         subscription = getattr(user, "subscription", None)
-        if subscription and subscription.stripe_subscription_id:
+        if (
+            settings.BILLING_PROVIDER == "stripe"
+            and subscription
+            and subscription.stripe_subscription_id
+        ):
             try:
                 stripe_subscription = get_stripe().Subscription
                 if hasattr(stripe_subscription, "cancel"):
@@ -512,7 +527,7 @@ class RevokeSessionView(APIView):
 
 
 @extend_schema_view(
-    post=extend_schema(responses={200: OpenApiTypes.OBJECT}),
+    post=extend_schema(request=OpenApiTypes.NONE, responses={200: OpenApiTypes.OBJECT}),
 )
 class RevokeOtherSessionsView(APIView):
     authentication_classes = [SubscriptionSessionAuthentication]
@@ -549,7 +564,7 @@ class VerifyEmailView(APIView):
             return error_response("The verification token is invalid or expired.", "invalid_verification_token", 400)
         if payload.get("email") != user.email:
             return error_response("The verification token is no longer valid.", "invalid_verification_token", 400)
-        profile = user.profile
+        profile = get_profile(user)
         profile.email_verified = True
         profile.email_verified_at = timezone.now()
         profile.save(update_fields=["email_verified", "email_verified_at"])
@@ -557,7 +572,10 @@ class VerifyEmailView(APIView):
 
 
 @extend_schema_view(
-    post=extend_schema(responses={200: OpenApiTypes.OBJECT, 429: OpenApiTypes.OBJECT})
+    post=extend_schema(
+        request=OpenApiTypes.NONE,
+        responses={200: OpenApiTypes.OBJECT, 429: OpenApiTypes.OBJECT, 503: OpenApiTypes.OBJECT},
+    )
 )
 class ResendVerificationView(APIView):
     authentication_classes = [SubscriptionSessionAuthentication]
@@ -566,9 +584,31 @@ class ResendVerificationView(APIView):
     throttle_scope = "email_verification"
 
     def post(self, request):
-        if not request.user.profile.email_verified:
-            send_verification_email(request.user)
-        return Response({"ok": True})
+        profile = get_profile(request.user)
+
+        if profile.email_verified:
+            return Response({
+                "ok": True,
+                "email_sent": False,
+                "already_verified": True,
+            })
+
+        sent = send_verification_email(request.user)
+
+        if not sent:
+            return Response(
+                {
+                    "ok": False,
+                    "email_sent": False,
+                    "detail": "Could not send verification email. Please try again.",
+                },
+                status=503,
+            )
+
+        return Response({
+            "ok": True,
+            "email_sent": True,
+        })
 
 
 @extend_schema_view(
@@ -681,6 +721,7 @@ class FacebookConnectView(APIView):
 
         ensure_subscription_active(request.user)
         reconnect_id = request.GET.get("reconnect")
+        ensure_email_verified(request.user)
         if reconnect_id:
             get_object_or_404(
                 SocialAccount,
@@ -690,7 +731,6 @@ class FacebookConnectView(APIView):
             )
             request.session["fb_reconnect_id"] = reconnect_id
         else:
-            ensure_email_verified(request.user)
             ensure_within_plan_limit(request.user, "connected_accounts")
             request.session.pop("fb_reconnect_id", None)
         request.session["fb_provider"] = provider

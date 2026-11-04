@@ -2,6 +2,7 @@ from datetime import timedelta
 
 from django.contrib.auth import get_user_model
 from django.contrib.sessions.models import Session
+from django.conf import settings
 from django.db import transaction
 from django.db.models import Count, Q
 from django.utils import timezone
@@ -14,7 +15,6 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from accounts.models import SocialAccount
-from accounts.models import UserProfile
 from billing.models import AdminAuditLog, Subscription
 from billing.stripe_utils import get_stripe
 from posts.models import Post
@@ -208,7 +208,15 @@ class AdminSubscriptionUpdateView(ProtectedUserAPIView):
             "status": subscription.status,
             "current_period_end": subscription.current_period_end.isoformat()
             if subscription.current_period_end else None,
+            "cancel_at_period_end": subscription.cancel_at_period_end,
         }
+        if (
+            subscription_status == Subscription.Status.CANCELED
+            and settings.BILLING_PROVIDER == "stripe"
+            and subscription.stripe_subscription_id
+        ):
+            _cancel_stripe_subscription(subscription.stripe_subscription_id)
+
         subscription.plan = plan
         subscription.status = subscription_status
         if extend_days:
@@ -216,10 +224,18 @@ class AdminSubscriptionUpdateView(ProtectedUserAPIView):
             if base < timezone.now():
                 base = timezone.now()
             subscription.current_period_end = base + timedelta(days=extend_days)
+        subscription.next_billing_date = subscription.current_period_end
         if subscription_status == Subscription.Status.CANCELED:
             subscription.plan = Subscription.Plan.FREE
             subscription.current_period_end = None
+            subscription.next_billing_date = None
             subscription.stripe_subscription_id = ""
+            subscription.cancel_at_period_end = False
+            subscription.canceled_at = timezone.now()
+            subscription.card_brand = None
+            subscription.card_last4 = None
+            subscription.card_exp_month = None
+            subscription.card_exp_year = None
         subscription.save()
         _audit(request.user, user, "subscription_updated", {
             "before": before,
@@ -228,6 +244,7 @@ class AdminSubscriptionUpdateView(ProtectedUserAPIView):
                 "status": subscription.status,
                 "current_period_end": subscription.current_period_end.isoformat()
                 if subscription.current_period_end else None,
+                "cancel_at_period_end": subscription.cancel_at_period_end,
             },
             "extend_days": extend_days,
         })
@@ -253,7 +270,10 @@ def _cancel_stripe_subscription(subscription_id):
 
 
 @extend_schema_view(
-    post=extend_schema(responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT})
+    post=extend_schema(
+        request=OpenApiTypes.NONE,
+        responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
+    )
 )
 class AdminDeactivateUserView(ProtectedUserAPIView):
     permission_classes = [IsAdminUser]
@@ -281,7 +301,7 @@ class AdminDeactivateUserView(ProtectedUserAPIView):
             _delete_user_sessions(user.pk)
 
         stripe_cancelled = None
-        if stripe_subscription_id:
+        if settings.BILLING_PROVIDER == "stripe" and stripe_subscription_id:
             try:
                 _cancel_stripe_subscription(stripe_subscription_id)
                 stripe_cancelled = True
@@ -294,7 +314,10 @@ class AdminDeactivateUserView(ProtectedUserAPIView):
 
 
 @extend_schema_view(
-    post=extend_schema(responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT})
+    post=extend_schema(
+        request=OpenApiTypes.NONE,
+        responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
+    )
 )
 class AdminReactivateUserView(APIView):
     permission_classes = [IsAdminUser]
@@ -308,7 +331,8 @@ class AdminReactivateUserView(APIView):
             subscription.status = Subscription.Status.ACTIVE
             if subscription.current_period_end and subscription.current_period_end <= timezone.now():
                 subscription.current_period_end = timezone.now() + timedelta(days=30)
-            subscription.save(update_fields=["status", "current_period_end", "updated_at"])
+            subscription.next_billing_date = subscription.current_period_end
+            subscription.save(update_fields=["status", "current_period_end", "next_billing_date", "updated_at"])
         _audit(request.user, user, "user_reactivated", {
             "subscription_status": subscription.status,
         })
@@ -359,7 +383,10 @@ def _reject_protected_admin_target(target, request):
 
 
 @extend_schema_view(
-    post=extend_schema(responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT})
+    post=extend_schema(
+        request=OpenApiTypes.NONE,
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
+    )
 )
 class AdminResetTwoFactorView(ProtectedUserAPIView):
     permission_classes = [IsAdminUser]
@@ -378,7 +405,10 @@ class AdminResetTwoFactorView(ProtectedUserAPIView):
 
 
 @extend_schema_view(
-    post=extend_schema(responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT})
+    post=extend_schema(
+        request=OpenApiTypes.NONE,
+        responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT},
+    )
 )
 class AdminVerifyEmailView(ProtectedUserAPIView):
     permission_classes = [IsAdminUser]
