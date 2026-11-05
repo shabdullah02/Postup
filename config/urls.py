@@ -34,6 +34,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/auth/', include('accounts.urls')),
     path('api/billing/', include('billing.urls')),
+    path('api/analytics/', include('analytics.urls')),
     path('api/admin/users/', AdminUsersView.as_view(), name='admin-users'),
     path('api/admin/users/<int:user_id>/subscription/', AdminSubscriptionUpdateView.as_view(), name='admin-user-subscription'),
     path('api/admin/users/<int:user_id>/deactivate/', AdminDeactivateUserView.as_view(), name='admin-user-deactivate'),

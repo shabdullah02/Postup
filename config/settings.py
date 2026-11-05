@@ -98,6 +98,7 @@ INSTALLED_APPS = [
     'socials',
     'accounts',
     'billing.apps.BillingConfig',
+    'analytics.apps.AnalyticsConfig',
 ]
 
 MIDDLEWARE = [

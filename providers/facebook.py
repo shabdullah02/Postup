@@ -19,6 +19,7 @@ class FacebookProvider:
                     "pages_show_list",
                     "pages_manage_posts",
                     "pages_read_engagement",
+                    "read_insights",
                 ]
             ),
         }
