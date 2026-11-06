@@ -153,6 +153,7 @@ def test_graph_failure_logs_safe_details_and_preserves_api_response(api_setup, c
     }
     assert "endpoint=posts" in caplog.text
     assert "400" in caplog.text
+    assert "code=200" in caplog.text
     assert TOKEN not in caplog.text
 
 

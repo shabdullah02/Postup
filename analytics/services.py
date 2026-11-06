@@ -49,8 +49,8 @@ def _log_caught_exception(exc, endpoint):
 def _graph_error_payload(response, endpoint):
     try:
         payload = response.json()
-    except (ValueError, AttributeError, TypeError) as exc:
-        if isinstance(exc, (TypeError, ValueError)):
+    except (KeyError, ValueError, AttributeError, TypeError) as exc:
+        if isinstance(exc, (KeyError, TypeError, ValueError)):
             _log_caught_exception(exc, endpoint)
         return {}
     if not isinstance(payload, dict):
@@ -62,7 +62,7 @@ def _graph_error_payload(response, endpoint):
 def _graph_error_code(error, endpoint):
     try:
         return int(error.get("code"))
-    except (TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError) as exc:
         _log_caught_exception(exc, endpoint)
         return None
 
@@ -71,14 +71,14 @@ def _request_graph(url, params, account, endpoint):
     try:
         response = requests.get(url, params=params, timeout=20)
     except requests.RequestException as exc:
-        logger.warning("Graph network request failed: %s", type(exc).__name__)
+        logger.warning("%s", type(exc).__name__)
         raise AnalyticsUnavailableError from exc
 
     if response.ok:
         try:
             payload = response.json()
-        except (ValueError, AttributeError, TypeError) as exc:
-            if isinstance(exc, (TypeError, ValueError)):
+        except (KeyError, ValueError, AttributeError, TypeError) as exc:
+            if isinstance(exc, (KeyError, TypeError, ValueError)):
                 _log_caught_exception(exc, endpoint)
             raise AnalyticsUnavailableError from exc
         if not isinstance(payload, dict):
