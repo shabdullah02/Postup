@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import Mock, patch
 
 import pytest
@@ -130,6 +131,29 @@ def test_graph_error_190_requires_reauthentication(api_setup):
     assert response.data["code"] == "needs_reauth"
     api_setup["account"].refresh_from_db()
     assert api_setup["account"].status == SocialAccount.Status.NEEDS_REAUTH
+
+
+def test_graph_failure_logs_safe_details_and_preserves_api_response(api_setup, caplog):
+    error_response = graph_response({"error": {"code": 200, "message": "x"}}, ok=False)
+    error_response.status_code = 400
+
+    with (
+        caplog.at_level(logging.WARNING, logger="analytics.services"),
+        patch("analytics.services.requests.get", return_value=error_response),
+    ):
+        response = api_setup["client"].get(
+            "/api/analytics/posts/",
+            {"account": api_setup["account"].pk},
+        )
+
+    assert response.status_code == 502
+    assert response.data == {
+        "detail": "Analytics unavailable. Try again later.",
+        "code": "facebook_unavailable",
+    }
+    assert "endpoint=posts" in caplog.text
+    assert "400" in caplog.text
+    assert TOKEN not in caplog.text
 
 
 def test_invalid_metric_does_not_fail_other_overview_metrics(api_setup):

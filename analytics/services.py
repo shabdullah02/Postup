@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, time, timedelta
 
 import requests
@@ -13,6 +14,7 @@ from socials.adapters import AuthExpiredError
 from .metrics import PAGE_METRICS
 
 CACHE_TTL_SECONDS = 15 * 60
+logger = logging.getLogger(__name__)
 
 
 class AnalyticsUnavailableError(Exception):
@@ -36,38 +38,65 @@ def _mark_needs_reauth(account):
     account.save(update_fields=["status"])
 
 
-def _graph_error_code(response):
+def _log_caught_exception(exc, endpoint):
+    logger.warning(
+        "Analytics request failed endpoint=%s exception=%s",
+        endpoint,
+        type(exc).__name__,
+    )
+
+
+def _graph_error_payload(response, endpoint):
     try:
         payload = response.json()
-    except (ValueError, AttributeError, TypeError):
-        return None
+    except (ValueError, AttributeError, TypeError) as exc:
+        if isinstance(exc, (TypeError, ValueError)):
+            _log_caught_exception(exc, endpoint)
+        return {}
     if not isinstance(payload, dict):
-        return None
+        return {}
     error = payload.get("error")
-    if not isinstance(error, dict):
-        return None
+    return error if isinstance(error, dict) else {}
+
+
+def _graph_error_code(error, endpoint):
     try:
         return int(error.get("code"))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError) as exc:
+        _log_caught_exception(exc, endpoint)
         return None
 
 
-def _request_graph(url, params, account):
+def _request_graph(url, params, account, endpoint):
     try:
         response = requests.get(url, params=params, timeout=20)
     except requests.RequestException as exc:
+        logger.warning("Graph network request failed: %s", type(exc).__name__)
         raise AnalyticsUnavailableError from exc
 
     if response.ok:
         try:
             payload = response.json()
         except (ValueError, AttributeError, TypeError) as exc:
+            if isinstance(exc, (TypeError, ValueError)):
+                _log_caught_exception(exc, endpoint)
             raise AnalyticsUnavailableError from exc
         if not isinstance(payload, dict):
             raise AnalyticsUnavailableError
         return payload
 
-    error_code = _graph_error_code(response)
+    error = _graph_error_payload(response, endpoint)
+    logger.warning(
+        "Graph request failed endpoint=%s status=%s code=%s "
+        "error_subcode=%s type=%s message=%s",
+        endpoint,
+        response.status_code,
+        error.get("code"),
+        error.get("error_subcode"),
+        error.get("type"),
+        error.get("message"),
+    )
+    error_code = _graph_error_code(error, endpoint)
     if error_code == 190:
         _mark_needs_reauth(account)
         raise AuthExpiredError
@@ -94,6 +123,7 @@ def _get_metric_series(account, token, metric, since, until):
             "access_token": token,
         },
         account,
+        f"insights:{metric}",
     )
     if payload is None:
         return None
@@ -127,7 +157,8 @@ def _get_metric_series(account, token, metric, since, until):
         try:
             number = float(value)
             date = datetime.fromisoformat(date_value.replace("Z", "+00:00")).date()
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            _log_caught_exception(exc, f"insights:{metric}")
             continue
         if number.is_integer():
             number = int(number)
@@ -251,6 +282,7 @@ def get_page_posts(account, limit=10):
             "access_token": token,
         },
         account,
+        "posts",
     )
     if payload is None:
         raise AnalyticsUnavailableError
