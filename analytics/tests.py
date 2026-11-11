@@ -54,9 +54,10 @@ def overview_payloads():
                     "data": [
                         {
                             "name": metric,
+                            "period": "day",
                             "values": [
-                                {"value": 4, "end_time": "2026-10-01T07:00:00+0000"},
-                                {"value": 3, "end_time": "2026-10-02T07:00:00+0000"},
+                                {"value": 3, "end_time": "2026-10-03T07:00:00+0000"},
+                                {"value": 4, "end_time": "2026-10-02T07:00:00+0000"},
                             ],
                         }
                     ]
@@ -157,11 +158,26 @@ def test_graph_failure_logs_safe_details_and_preserves_api_response(api_setup, c
     assert TOKEN not in caplog.text
 
 
-def test_invalid_metric_does_not_fail_other_overview_metrics(api_setup):
+def test_invalid_metric_does_not_fail_other_overview_metrics(api_setup, caplog):
     payloads = overview_payloads()
-    payloads[0] = graph_response({"error": {"code": 100}}, ok=False)
+    invalid_metric = graph_response(
+        {
+            "error": {
+                "code": 100,
+                "message": "Invalid metric page_media_view",
+            }
+        },
+        ok=False,
+    )
+    invalid_metric.status_code = 400
 
-    with patch("analytics.services.requests.get", side_effect=payloads):
+    with (
+        caplog.at_level(logging.WARNING, logger="analytics.services"),
+        patch(
+            "analytics.services.requests.get",
+            side_effect=[invalid_metric, *payloads[1:]],
+        ),
+    ):
         response = api_setup["client"].get(
             "/api/analytics/overview/",
             {"account": api_setup["account"].pk, "days": "7"},
@@ -171,9 +187,18 @@ def test_invalid_metric_does_not_fail_other_overview_metrics(api_setup):
     first_key = next(iter(PAGE_METRICS))
     assert response.data["totals"][first_key] is None
     assert response.data["series"][first_key] is None
-    assert response.data["unavailable"][0]["key"] == first_key
+    assert response.data["unavailable"] == [
+        {
+            "key": "views",
+            "metric": "page_media_view",
+            "code": "metric_unavailable",
+        }
+    ]
     assert response.data["totals"]["reach"] == 7
     assert response.data["range"]["days"] == 7
+    assert "code=100" in caplog.text
+    assert "Invalid metric page_media_view" in caplog.text
+    assert TOKEN not in caplog.text
 
 
 def test_invalid_days_is_rejected(api_setup):
@@ -206,10 +231,24 @@ def test_overview_shape_and_metric_totals(api_setup):
         "date": "2026-10-01",
         "value": 4,
     }
+    assert response.data["series"]["views"][1] == {
+        "date": "2026-10-02",
+        "value": 3,
+    }
     assert response.data["totals"]["net_follower_growth"] == 0
     assert response.data["unavailable"] == []
     assert mock_get.call_count == len(PAGE_METRICS)
     assert all(call.kwargs["timeout"] == 20 for call in mock_get.call_args_list)
+    assert [
+        call.kwargs["params"]["metric"] for call in mock_get.call_args_list
+    ] == list(PAGE_METRICS.values())
+    assert all(
+        call.kwargs["params"]["period"] == "day"
+        for call in mock_get.call_args_list
+    )
+    assert PAGE_METRICS["views"] == "page_media_view"
+    assert PAGE_METRICS["reach"] == "page_total_media_view_unique"
+    assert PAGE_METRICS["followers_total"] == "page_follows"
 
 
 def test_posts_shape_and_message_truncation(api_setup):

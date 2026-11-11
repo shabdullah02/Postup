@@ -83,9 +83,15 @@ def _request_graph(url, params, account, endpoint):
             raise AnalyticsUnavailableError from exc
         if not isinstance(payload, dict):
             raise AnalyticsUnavailableError
-        return payload
-
-    error = _graph_error_payload(response, endpoint)
+        error = payload.get("error")
+        if not isinstance(error, dict):
+            return payload
+    else:
+        error = _graph_error_payload(response, endpoint)
+    message = error.get("message")
+    token = params.get("access_token")
+    if isinstance(message, str) and isinstance(token, str):
+        message = message.replace(token, "[redacted]")
     logger.warning(
         "Graph request failed endpoint=%s status=%s code=%s "
         "error_subcode=%s type=%s message=%s",
@@ -94,7 +100,7 @@ def _request_graph(url, params, account, endpoint):
         error.get("code"),
         error.get("error_subcode"),
         error.get("type"),
-        error.get("message"),
+        message,
     )
     error_code = _graph_error_code(error, endpoint)
     if error_code == 190:
@@ -142,6 +148,9 @@ def _get_metric_series(account, token, metric, since, until):
     if metric_data is None:
         return []
 
+    if metric_data.get("period") != "day":
+        raise AnalyticsUnavailableError
+
     values = metric_data.get("values")
     if not isinstance(values, list):
         raise AnalyticsUnavailableError
@@ -156,14 +165,18 @@ def _get_metric_series(account, token, metric, since, until):
             continue
         try:
             number = float(value)
-            date = datetime.fromisoformat(date_value.replace("Z", "+00:00")).date()
+            # Insights end_time marks the exclusive end of each daily bucket.
+            date = (
+                datetime.fromisoformat(date_value.replace("Z", "+00:00")).date()
+                - timedelta(days=1)
+            )
         except (TypeError, ValueError) as exc:
             _log_caught_exception(exc, f"insights:{metric}")
             continue
         if number.is_integer():
             number = int(number)
         series.append({"date": date.isoformat(), "value": number})
-    return series
+    return sorted(series, key=lambda item: item["date"])
 
 
 def _series_total(series):

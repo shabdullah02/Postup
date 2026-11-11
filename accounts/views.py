@@ -1,7 +1,8 @@
 import base64
 import hashlib
 import secrets
-from urllib.parse import quote
+from datetime import timedelta
+from urllib.parse import quote, urlencode
 
 import requests
 from django.conf import settings
@@ -743,6 +744,29 @@ class FacebookConnectView(APIView):
         )
 
 
+class ThreadsConnectView(APIView):
+    authentication_classes = [SubscriptionSessionAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        ensure_subscription_active(request.user)
+        ensure_email_verified(request.user)
+        ensure_within_plan_limit(request.user, "connected_accounts")
+
+        state = secrets.token_urlsafe(32)
+        request.session["threads_oauth_state"] = state
+        params = urlencode(
+            {
+                "client_id": settings.THREADS_APP_ID,
+                "redirect_uri": settings.THREADS_REDIRECT_URI,
+                "scope": "threads_basic,threads_content_publish",
+                "response_type": "code",
+                "state": state,
+            }
+        )
+        return HttpResponseRedirect(f"https://threads.net/oauth/authorize?{params}")
+
+
 @extend_schema_view(
     get=extend_schema(responses={200: OpenApiTypes.OBJECT}),
     post=extend_schema(request=OpenApiTypes.OBJECT, responses={200: OpenApiTypes.OBJECT}),
@@ -1069,3 +1093,111 @@ class FacebookCallbackView(APIView):
 
         request.session["fb_pending_pages"] = pending_pages
         return HttpResponseRedirect(f"{settings.FRONTEND_URL.rstrip('/')}/accounts/select")
+
+
+class ThreadsCallbackView(APIView):
+    authentication_classes = [SubscriptionSessionAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def _frontend_error_redirect(self, error):
+        return HttpResponseRedirect(
+            f"{settings.FRONTEND_URL.rstrip('/')}/accounts?threads_error={quote(error, safe='')}"
+        )
+
+    def get(self, request):
+        if request.GET.get("error") or request.GET.get("error_reason"):
+            request.session.pop("threads_oauth_state", None)
+            return self._frontend_error_redirect("threads_denied")
+
+        state = request.GET.get("state")
+        saved_state = request.session.pop("threads_oauth_state", None)
+        if not state or not saved_state or state != saved_state:
+            return self._frontend_error_redirect("invalid_state")
+
+        code = request.GET.get("code", "")
+        if code.endswith("#_"):
+            code = code[:-2]
+        if not code:
+            return self._frontend_error_redirect("missing_code")
+
+        try:
+            short_token_response = requests.post(
+                "https://graph.threads.net/oauth/access_token",
+                data={
+                    "client_id": settings.THREADS_APP_ID,
+                    "client_secret": settings.THREADS_APP_SECRET,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": settings.THREADS_REDIRECT_URI,
+                    "code": code,
+                },
+                timeout=20,
+            )
+            if not short_token_response.ok:
+                return self._frontend_error_redirect("threads_unavailable")
+            short_token_data = short_token_response.json()
+            short_token = short_token_data.get("access_token")
+            if not isinstance(short_token, str) or not short_token:
+                return self._frontend_error_redirect("threads_unavailable")
+
+            long_token_response = requests.get(
+                "https://graph.threads.net/access_token",
+                params={
+                    "grant_type": "th_exchange_token",
+                    "client_secret": settings.THREADS_APP_SECRET,
+                    "access_token": short_token,
+                },
+                timeout=20,
+            )
+            if not long_token_response.ok:
+                return self._frontend_error_redirect("threads_unavailable")
+            long_token_data = long_token_response.json()
+            long_token = long_token_data.get("access_token")
+            expires_in = int(long_token_data.get("expires_in", 0))
+            if not isinstance(long_token, str) or not long_token or expires_in <= 0:
+                return self._frontend_error_redirect("threads_unavailable")
+
+            profile_response = requests.get(
+                "https://graph.threads.net/v1.0/me",
+                params={
+                    "fields": "id,username,threads_profile_picture_url",
+                    "access_token": long_token,
+                },
+                timeout=20,
+            )
+            if not profile_response.ok:
+                return self._frontend_error_redirect("threads_unavailable")
+            profile = profile_response.json()
+            external_id = profile.get("id")
+            username = profile.get("username")
+            if (
+                not isinstance(external_id, str)
+                or not external_id
+                or not isinstance(username, str)
+                or not username
+            ):
+                return self._frontend_error_redirect("threads_unavailable")
+            token_expires_at = timezone.now() + timedelta(seconds=expires_in)
+        except (
+            requests.RequestException,
+            ValueError,
+            AttributeError,
+            TypeError,
+            OverflowError,
+        ):
+            return self._frontend_error_redirect("threads_unavailable")
+
+        SocialAccount.objects.update_or_create(
+            user=request.user,
+            provider=SocialAccount.Provider.THREADS,
+            external_id=str(external_id),
+            defaults={
+                "name": username,
+                "token_encrypted": encrypt_token(long_token),
+                "token_expires_at": token_expires_at,
+                "status": SocialAccount.Status.ACTIVE,
+                "scopes": "threads_basic, threads_content_publish",
+            },
+        )
+        return HttpResponseRedirect(
+            f"{settings.FRONTEND_URL.rstrip('/')}/accounts?threads_connected=1"
+        )

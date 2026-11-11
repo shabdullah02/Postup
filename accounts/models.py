@@ -30,6 +30,7 @@ class SocialAccount(models.Model):
     class Provider(models.TextChoices):
         FACEBOOK = "facebook", "Facebook"
         INSTAGRAM = "instagram", "Instagram"
+        THREADS = "threads", "Threads"
 
     class Status(models.TextChoices):
         ACTIVE = "active", "Active"
@@ -45,6 +46,7 @@ class SocialAccount(models.Model):
     external_id = models.CharField(max_length=255)
     name = models.CharField(max_length=255)
     token_encrypted = models.BinaryField()
+    token_expires_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(
         max_length=20,
         choices=Status.choices,
