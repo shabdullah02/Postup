@@ -45,13 +45,24 @@ class PostViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         post = self.get_object()
-        if post.status not in {Post.Status.DRAFT, Post.Status.SCHEDULED}:
+        if post.status not in {
+            Post.Status.DRAFT,
+            Post.Status.SCHEDULED,
+            Post.Status.FAILED,
+        }:
             return error_response(
-                "Only draft or scheduled posts can be modified.",
+                "Only draft, scheduled, or failed posts can be deleted.",
                 "invalid_post_state",
                 400,
             )
         return super().destroy(request, *args, **kwargs)
+
+    @action(detail=False, methods=["post"], url_path="clear-failed")
+    def clear_failed(self, request):
+        _, deleted_by_model = self.get_queryset().filter(
+            status=Post.Status.FAILED
+        ).delete()
+        return Response({"deleted": deleted_by_model.get(Post._meta.label, 0)})
 
     @action(detail=True, methods=["post"])
     def publish_now(self, request, *args, **kwargs):

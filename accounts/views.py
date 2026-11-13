@@ -78,6 +78,11 @@ def _login_lockout_key(username, ip_address):
     return f"postup:login-fail:{username_digest}:{ip_digest}"
 
 
+def _threads_oauth_cache_key(state):
+    digest = hashlib.sha256(state.encode("utf-8")).hexdigest()
+    return f"postup:threads-oauth:{digest}"
+
+
 @extend_schema_view(get=extend_schema(responses={200: OpenApiTypes.OBJECT}))
 class CsrfView(APIView):
     authentication_classes = []
@@ -754,12 +759,19 @@ class ThreadsConnectView(APIView):
         ensure_within_plan_limit(request.user, "connected_accounts")
 
         state = secrets.token_urlsafe(32)
-        request.session["threads_oauth_state"] = state
+        cache.set(
+            _threads_oauth_cache_key(state),
+            request.user.pk,
+            timeout=600,
+        )
         params = urlencode(
             {
                 "client_id": settings.THREADS_APP_ID,
                 "redirect_uri": settings.THREADS_REDIRECT_URI,
-                "scope": "threads_basic,threads_content_publish",
+                "scope": (
+                    "threads_basic,threads_content_publish,"
+                    "threads_manage_insights"
+                ),
                 "response_type": "code",
                 "state": state,
             }
@@ -1096,8 +1108,8 @@ class FacebookCallbackView(APIView):
 
 
 class ThreadsCallbackView(APIView):
-    authentication_classes = [SubscriptionSessionAuthentication]
-    permission_classes = [IsAuthenticated]
+    authentication_classes = []
+    permission_classes = [AllowAny]
 
     def _frontend_error_redirect(self, error):
         return HttpResponseRedirect(
@@ -1105,18 +1117,36 @@ class ThreadsCallbackView(APIView):
         )
 
     def get(self, request):
-        if request.GET.get("error") or request.GET.get("error_reason"):
-            request.session.pop("threads_oauth_state", None)
-            return self._frontend_error_redirect("threads_denied")
+        state = request.GET.get("state", "")
 
-        state = request.GET.get("state")
-        saved_state = request.session.pop("threads_oauth_state", None)
-        if not state or not saved_state or state != saved_state:
+        if not state:
             return self._frontend_error_redirect("invalid_state")
 
+        cache_key = _threads_oauth_cache_key(state)
+        user_id = cache.get(cache_key)
+
+        if user_id is None:
+            return self._frontend_error_redirect("invalid_state")
+
+        # Consume the state so it cannot be reused.
+        cache.delete(cache_key)
+
+        user = get_user_model().objects.filter(
+            pk=user_id,
+            is_active=True,
+        ).first()
+
+        if not user:
+            return self._frontend_error_redirect("invalid_state")
+
+        if request.GET.get("error") or request.GET.get("error_reason"):
+            return self._frontend_error_redirect("threads_denied")
+
         code = request.GET.get("code", "")
+
         if code.endswith("#_"):
             code = code[:-2]
+
         if not code:
             return self._frontend_error_redirect("missing_code")
 
@@ -1187,7 +1217,7 @@ class ThreadsCallbackView(APIView):
             return self._frontend_error_redirect("threads_unavailable")
 
         SocialAccount.objects.update_or_create(
-            user=request.user,
+            user=user,
             provider=SocialAccount.Provider.THREADS,
             external_id=str(external_id),
             defaults={
@@ -1195,7 +1225,10 @@ class ThreadsCallbackView(APIView):
                 "token_encrypted": encrypt_token(long_token),
                 "token_expires_at": token_expires_at,
                 "status": SocialAccount.Status.ACTIVE,
-                "scopes": "threads_basic, threads_content_publish",
+                "scopes": (
+                    "threads_basic, threads_content_publish, "
+                    "threads_manage_insights"
+                ),
             },
         )
         return HttpResponseRedirect(

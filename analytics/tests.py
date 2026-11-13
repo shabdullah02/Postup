@@ -8,7 +8,7 @@ from rest_framework.test import APIClient
 
 from accounts.models import SocialAccount
 from accounts.utils.crypto import encrypt_token
-from analytics.metrics import PAGE_METRICS
+from analytics.metrics import PAGE_METRICS, THREADS_METRICS
 
 pytestmark = pytest.mark.django_db
 
@@ -67,6 +67,17 @@ def overview_payloads():
     return payloads
 
 
+def create_threads_account(api_setup, scopes="threads_basic,threads_manage_insights"):
+    return SocialAccount.objects.create(
+        user=api_setup["user"],
+        provider=SocialAccount.Provider.THREADS,
+        external_id="threads-user-123",
+        name="Threads user",
+        token_encrypted=encrypt_token(TOKEN),
+        scopes=scopes,
+    )
+
+
 def test_anonymous_user_is_denied(api_setup):
     client = APIClient()
     response = client.get(
@@ -99,6 +110,156 @@ def test_missing_read_insights_scope_is_forbidden(api_setup):
 
     assert response.status_code == 403
     assert response.data["code"] == "missing_permission"
+    mock_get.assert_not_called()
+
+
+def test_threads_overview_uses_common_shape_and_date_range(api_setup):
+    account = create_threads_account(api_setup)
+    graph_data = []
+    for metric in THREADS_METRICS.values():
+        if metric == "followers_count":
+            graph_data.append(
+                {"name": metric, "total_value": {"value": 123}}
+            )
+        else:
+            graph_data.append(
+                {
+                    "name": metric,
+                    "period": "day",
+                    "values": [
+                        {"value": 4, "end_time": "2026-10-03T07:00:00+0000"},
+                        {"value": 3, "end_time": "2026-10-02T07:00:00+0000"},
+                    ],
+                }
+            )
+
+    with patch(
+        "analytics.services.requests.get",
+        return_value=graph_response({"data": graph_data}),
+    ) as mock_get:
+        response = api_setup["client"].get(
+            "/api/analytics/overview/",
+            {"account": account.pk, "days": "7"},
+        )
+
+    assert response.status_code == 200
+    assert set(response.data) == {"range", "totals", "series", "unavailable"}
+    assert response.data["range"]["days"] == 7
+    assert response.data["totals"]["views"] == 7
+    assert response.data["totals"]["followers_total"] == 123
+    assert response.data["series"]["views"] == [
+        {"date": "2026-10-01", "value": 3},
+        {"date": "2026-10-02", "value": 4},
+    ]
+    assert response.data["series"]["net_follower_growth"] is None
+    assert response.data["unavailable"] == []
+    assert mock_get.call_args.args[0] == (
+        "https://graph.threads.net/v1.0/threads-user-123/threads_insights"
+    )
+    params = mock_get.call_args.kwargs["params"]
+    assert params["metric"] == ",".join(THREADS_METRICS.values())
+    assert isinstance(params["since"], int)
+    assert isinstance(params["until"], int)
+    assert params["access_token"] == TOKEN
+
+
+def test_threads_posts_normalize_post_insights(api_setup):
+    account = create_threads_account(api_setup)
+    insights = [
+        {
+            "name": metric,
+            "values": [{"value": value}],
+        }
+        for metric, value in {
+            "views": 100,
+            "likes": 12,
+            "replies": 3,
+            "reposts": 4,
+            "quotes": 2,
+            "shares": 1,
+        }.items()
+    ]
+    with patch(
+        "analytics.services.requests.get",
+        side_effect=[
+            graph_response(
+                {
+                    "data": [
+                        {
+                            "id": "thread-media-456",
+                            "text": "A Threads post",
+                            "timestamp": "2026-10-01T12:00:00+0000",
+                            "permalink": "https://www.threads.net/@user/post/456",
+                        }
+                    ]
+                }
+            ),
+            graph_response({"data": insights}),
+        ],
+    ) as mock_get:
+        response = api_setup["client"].get(
+            "/api/analytics/posts/",
+            {"account": account.pk},
+        )
+
+    assert response.status_code == 200
+    assert response.data == [
+        {
+            "id": "thread-media-456",
+            "message": "A Threads post",
+            "created_time": "2026-10-01T12:00:00+0000",
+            "permalink_url": "https://www.threads.net/@user/post/456",
+            "reactions": 12,
+            "comments": 3,
+            "shares": 1,
+            "views": 100,
+            "reposts": 4,
+            "quotes": 2,
+        }
+    ]
+    assert mock_get.call_args_list[0].args[0] == (
+        "https://graph.threads.net/v1.0/threads-user-123/threads"
+    )
+    assert mock_get.call_args_list[1].args[0] == (
+        "https://graph.threads.net/v1.0/thread-media-456/threads_insights"
+    )
+    assert mock_get.call_args_list[1].kwargs["params"]["metric"] == (
+        "views,likes,replies,reposts,quotes,shares"
+    )
+
+
+def test_threads_permission_error_requests_reconnection(api_setup):
+    account = create_threads_account(api_setup)
+    error_response = graph_response(
+        {"error": {"code": 10, "message": "Permission denied."}},
+        ok=False,
+    )
+    error_response.status_code = 400
+
+    with patch("analytics.services.requests.get", return_value=error_response):
+        response = api_setup["client"].get(
+            "/api/analytics/overview/",
+            {"account": account.pk},
+        )
+
+    assert response.status_code == 403
+    assert response.data == {
+        "detail": "Reconnect Threads to grant analytics access.",
+        "code": "missing_permission",
+    }
+
+
+def test_threads_overview_without_insights_scope_is_forbidden(api_setup):
+    account = create_threads_account(api_setup, scopes="threads_basic")
+
+    with patch("analytics.services.requests.get") as mock_get:
+        response = api_setup["client"].get(
+            "/api/analytics/overview/",
+            {"account": account.pk},
+        )
+
+    assert response.status_code == 403
+    assert response.data["detail"] == "Reconnect Threads to grant analytics access."
     mock_get.assert_not_called()
 
 

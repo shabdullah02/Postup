@@ -5,12 +5,14 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.test import override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts.models import SocialAccount
 from accounts.utils.crypto import decrypt_token
+from accounts.views import _threads_oauth_cache_key
 
 pytestmark = pytest.mark.django_db
 
@@ -39,10 +41,8 @@ def threads_client(threads_user):
     return client
 
 
-def set_oauth_state(client, state="expected-state"):
-    session = client.session
-    session["threads_oauth_state"] = state
-    session.save()
+def set_oauth_state(user, state="expected-state"):
+    cache.set(_threads_oauth_cache_key(state), user.pk, 10 * 60)
 
 
 def threads_responses(username="postup_threads", access_token="long-lived-token"):
@@ -57,7 +57,7 @@ def threads_responses(username="postup_threads", access_token="long-lived-token"
     )
 
 
-def test_threads_connect_redirects_with_expected_authorization_url(threads_client):
+def test_threads_connect_redirects_with_expected_authorization_url(threads_client, threads_user):
     with (
         override_settings(
             THREADS_APP_ID="threads-app-id",
@@ -77,15 +77,18 @@ def test_threads_connect_redirects_with_expected_authorization_url(threads_clien
     assert params["redirect_uri"] == [
         "https://backend.example.test/api/auth/callback/threads/"
     ]
-    assert params["scope"] == ["threads_basic,threads_content_publish"]
+    assert params["scope"] == [
+        "threads_basic,threads_content_publish,threads_manage_insights"
+    ]
     assert params["response_type"] == ["code"]
-    assert params["state"] == [threads_client.session["threads_oauth_state"]]
+    state = params["state"][0]
+    assert cache.get(_threads_oauth_cache_key(state)) == threads_user.pk
     mock_get.assert_not_called()
     mock_post.assert_not_called()
 
 
 def test_threads_callback_creates_account_and_strips_trailing_hash(threads_client, threads_user):
-    set_oauth_state(threads_client)
+    set_oauth_state(threads_user)
     before = timezone.now()
     with (
         patch("accounts.views.requests.post", return_value=threads_responses()[0]) as mock_post,
@@ -130,7 +133,9 @@ def test_threads_callback_creates_account_and_strips_trailing_hash(threads_clien
     assert account.name == "postup_threads"
     assert decrypt_token(account.token_encrypted) == "long-lived-token"
     assert account.status == SocialAccount.Status.ACTIVE
-    assert account.scopes == "threads_basic, threads_content_publish"
+    assert account.scopes == (
+        "threads_basic, threads_content_publish, threads_manage_insights"
+    )
     expiry = timedelta(seconds=5184000)
     assert before + expiry <= account.token_expires_at <= after + expiry
     assert "long-lived-token" not in response["Location"]
@@ -144,7 +149,7 @@ def test_threads_callback_creates_account_and_strips_trailing_hash(threads_clien
     ],
 )
 def test_threads_callback_rejects_bad_or_missing_state(threads_client, threads_user, query):
-    set_oauth_state(threads_client)
+    set_oauth_state(threads_user)
     with (
         patch("accounts.views.requests.get") as mock_get,
         patch("accounts.views.requests.post") as mock_post,
@@ -168,7 +173,7 @@ def test_threads_callback_rejects_bad_or_missing_state(threads_client, threads_u
     ],
 )
 def test_threads_callback_handles_user_denied(threads_client, threads_user, query):
-    set_oauth_state(threads_client)
+    set_oauth_state(threads_user)
     with (
         patch("accounts.views.requests.get") as mock_get,
         patch("accounts.views.requests.post") as mock_post,
@@ -188,7 +193,7 @@ def test_threads_callback_handles_user_denied(threads_client, threads_user, quer
 def test_threads_callback_handles_each_meta_api_failure(
     threads_client, threads_user, failed_call
 ):
-    set_oauth_state(threads_client)
+    set_oauth_state(threads_user)
     post_response = graph_response({"access_token": "short-lived-token"})
     get_responses = [
         graph_response({"access_token": "long-lived-token", "expires_in": 5184000}),
@@ -222,7 +227,7 @@ def test_threads_reconnect_updates_existing_account(threads_client, threads_user
         ("initial_username", "initial-token"),
         ("updated_username", "updated-token"),
     ):
-        set_oauth_state(threads_client)
+        set_oauth_state(threads_user)
         responses = threads_responses(username=username, access_token=token)
         with (
             patch("accounts.views.requests.post", return_value=responses[0]),
@@ -262,21 +267,32 @@ def test_threads_accounts_are_listed_and_can_be_disconnected(threads_client, thr
     assert not SocialAccount.objects.filter(pk=account.pk).exists()
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "/api/socials/threads/connect/",
-        "/api/auth/callback/threads/",
-    ],
-)
-def test_threads_oauth_endpoints_require_authentication(path):
+def test_threads_connect_requires_authentication():
     client = APIClient()
     with (
         patch("accounts.views.requests.get") as mock_get,
         patch("accounts.views.requests.post") as mock_post,
     ):
-        response = client.get(path)
+        response = client.get("/api/socials/threads/connect/")
 
     assert response.status_code == 403
     mock_get.assert_not_called()
     mock_post.assert_not_called()
+
+
+def test_threads_callback_completes_without_authentication(threads_user):
+    set_oauth_state(threads_user)
+    responses = threads_responses()
+    with (
+        patch("accounts.views.requests.post", return_value=responses[0]),
+        patch("accounts.views.requests.get", side_effect=responses[1:]),
+    ):
+        response = APIClient().get(
+            "/api/auth/callback/threads/",
+            {"state": "expected-state", "code": "oauth-code"},
+        )
+
+    assert response["Location"].endswith("/accounts?threads_connected=1")
+    account = SocialAccount.objects.get(user=threads_user)
+    assert account.provider == SocialAccount.Provider.THREADS
+    assert account.external_id == "threads-user-123"

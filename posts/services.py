@@ -4,7 +4,12 @@ from django.utils import timezone
 from accounts.models import SocialAccount
 from accounts.providers.instagram import InstagramProvider
 from posts.models import Post
-from socials.adapters import ADAPTERS, AuthExpiredError, FacebookPublishResult
+from socials.adapters import (
+    ADAPTERS,
+    AuthExpiredError,
+    FacebookPublishResult,
+    PublishError,
+)
 
 
 def publish_post(post: Post, reauth_required_account_ids=None, adapters=None) -> Post:
@@ -38,10 +43,23 @@ def publish_post(post: Post, reauth_required_account_ids=None, adapters=None) ->
                 account, post.content, image_url=post.image_url
             )
         else:
-            publish_result = adapters[account.provider].post(
+            adapter = adapters.get(account.provider)
+            if adapter is None:
+                raise PublishError(
+                    f"Publishing for '{account.provider}' is not supported yet"
+                )
+            publish_result = adapter.post(
                 account,
                 post.content,
             )
+        if account.provider == SocialAccount.Provider.THREADS and (
+            not isinstance(publish_result, FacebookPublishResult)
+            or not isinstance(publish_result.external_post_id, str)
+            or not publish_result.external_post_id.strip()
+            or not isinstance(publish_result.permalink_url, str)
+            or not publish_result.permalink_url.strip()
+        ):
+            raise PublishError("Threads publish could not be verified.")
     except AuthExpiredError:
         reauth_required_account_ids.add(account.id)
         post.status = Post.Status.FAILED

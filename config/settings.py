@@ -31,10 +31,10 @@ FB_REDIRECT_URI = os.getenv(
 FB_GRAPH_VERSION = os.getenv("FB_GRAPH_VERSION", "v21.0")
 FB_GRAPH_BASE_URL = os.getenv("FB_GRAPH_BASE_URL", "https://graph.facebook.com")
 FB_DIALOG_BASE_URL = os.getenv("FB_DIALOG_BASE_URL", "https://www.facebook.com")
-THREADS_APP_ID = os.getenv("THREADS_APP_ID", "")
-THREADS_APP_SECRET = os.getenv("THREADS_APP_SECRET", "")
+THREADS_APP_ID = os.getenv("TH_APP_ID", "")
+THREADS_APP_SECRET = os.getenv("TH_APP_SECRET", "")
 THREADS_REDIRECT_URI = os.getenv(
-    "THREADS_REDIRECT_URI", "http://localhost:8000/api/auth/callback/threads/"
+    "TH_REDIRECT_URI", "http://localhost:8000/api/auth/callback/threads/"
 )
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 _frontend_parts = urlsplit(FRONTEND_URL)

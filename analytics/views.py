@@ -8,6 +8,7 @@ from accounts.models import SocialAccount
 from socials.adapters import AuthExpiredError
 
 from .services import (
+    AnalyticsPermissionError,
     AnalyticsUnavailableError,
     get_page_overview,
     get_page_posts,
@@ -30,7 +31,10 @@ def _get_account(request):
         account = SocialAccount.objects.get(
             pk=account_id,
             user=request.user,
-            provider=SocialAccount.Provider.FACEBOOK,
+            provider__in=(
+                SocialAccount.Provider.FACEBOOK,
+                SocialAccount.Provider.THREADS,
+            ),
         )
     except (SocialAccount.DoesNotExist, ValueError, TypeError):
         return None, Response(status=status.HTTP_404_NOT_FOUND)
@@ -43,17 +47,49 @@ def _check_account_access(account):
             {"code": "needs_reauth"},
             status=status.HTTP_409_CONFLICT,
         )
-    if "read_insights" not in {
+    required_scope = (
+        "threads_manage_insights"
+        if account.provider == SocialAccount.Provider.THREADS
+        else "read_insights"
+    )
+    if required_scope not in {
         scope.strip() for scope in account.scopes.split(",") if scope.strip()
     }:
+        detail = (
+            "Reconnect Threads to grant analytics access."
+            if account.provider == SocialAccount.Provider.THREADS
+            else "Facebook analytics permission is required."
+        )
         return Response(
             {
-                "detail": "Facebook analytics permission is required.",
+                "detail": detail,
                 "code": "missing_permission",
             },
             status=status.HTTP_403_FORBIDDEN,
         )
     return None
+
+
+def _unavailable_response(account):
+    if account.provider == SocialAccount.Provider.THREADS:
+        return Response(
+            {
+                "detail": "Threads analytics unavailable. Try again later.",
+                "code": "threads_unavailable",
+            },
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+    return Response(ANALYTICS_UNAVAILABLE, status=status.HTTP_502_BAD_GATEWAY)
+
+
+def _threads_permission_response():
+    return Response(
+        {
+            "detail": "Reconnect Threads to grant analytics access.",
+            "code": "missing_permission",
+        },
+        status=status.HTTP_403_FORBIDDEN,
+    )
 
 
 class PageOverviewView(APIView):
@@ -82,8 +118,10 @@ class PageOverviewView(APIView):
                 {"code": "needs_reauth"},
                 status=status.HTTP_409_CONFLICT,
             )
+        except AnalyticsPermissionError:
+            return _threads_permission_response()
         except AnalyticsUnavailableError:
-            return Response(ANALYTICS_UNAVAILABLE, status=status.HTTP_502_BAD_GATEWAY)
+            return _unavailable_response(account)
 
 
 class PagePostsView(APIView):
@@ -105,5 +143,7 @@ class PagePostsView(APIView):
                 {"code": "needs_reauth"},
                 status=status.HTTP_409_CONFLICT,
             )
+        except AnalyticsPermissionError:
+            return _threads_permission_response()
         except AnalyticsUnavailableError:
-            return Response(ANALYTICS_UNAVAILABLE, status=status.HTTP_502_BAD_GATEWAY)
+            return _unavailable_response(account)

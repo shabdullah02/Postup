@@ -11,13 +11,17 @@ from accounts.models import SocialAccount
 from accounts.utils.crypto import decrypt_token
 from socials.adapters import AuthExpiredError
 
-from .metrics import PAGE_METRICS
+from .metrics import PAGE_METRICS, THREADS_METRICS, THREADS_POST_METRICS
 
 CACHE_TTL_SECONDS = 15 * 60
 logger = logging.getLogger(__name__)
 
 
 class AnalyticsUnavailableError(Exception):
+    pass
+
+
+class AnalyticsPermissionError(Exception):
     pass
 
 
@@ -106,6 +110,11 @@ def _request_graph(url, params, account, endpoint):
     if error_code == 190:
         _mark_needs_reauth(account)
         raise AuthExpiredError
+    if (
+        account.provider == SocialAccount.Provider.THREADS
+        and error_code in {10, 200}
+    ):
+        raise AnalyticsPermissionError
     if error_code == 100:
         return None
     raise AnalyticsUnavailableError
@@ -179,12 +188,139 @@ def _get_metric_series(account, token, metric, since, until):
     return sorted(series, key=lambda item: item["date"])
 
 
+def _threads_insights_url(object_id):
+    return f"https://graph.threads.net/v1.0/{object_id}/threads_insights"
+
+
+def _numeric_value(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return int(number) if number.is_integer() else number
+
+
+def _normalize_threads_metric(metric_data):
+    if not isinstance(metric_data, dict):
+        return [], None
+
+    series = []
+    undated_values = []
+    values = metric_data.get("values")
+    if isinstance(values, list):
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            number = _numeric_value(item.get("value"))
+            date_value = item.get("end_time")
+            if number is None:
+                continue
+            if not isinstance(date_value, str):
+                undated_values.append(number)
+                continue
+            try:
+                date = (
+                    datetime.fromisoformat(date_value.replace("Z", "+00:00")).date()
+                    - timedelta(days=1)
+                )
+            except ValueError as exc:
+                _log_caught_exception(exc, "threads_insights")
+                continue
+            series.append({"date": date.isoformat(), "value": number})
+
+    series.sort(key=lambda item: item["date"])
+    total_value = metric_data.get("total_value")
+    if isinstance(total_value, dict):
+        total_value = total_value.get("value")
+    total = _numeric_value(total_value)
+    if total is None:
+        total = _numeric_value(metric_data.get("value"))
+    if total is None and series:
+        total = _series_total(series)
+    if total is None and undated_values:
+        total = sum(undated_values)
+    return series, total
+
+
+def _get_threads_overview(account, days):
+    token = _access_token(account)
+    until_date = timezone.localdate()
+    since_date = until_date - timedelta(days=days - 1)
+    local_tz = timezone.get_current_timezone()
+    since_timestamp = int(
+        timezone.make_aware(datetime.combine(since_date, time.min), local_tz).timestamp()
+    )
+    until_timestamp = int(
+        timezone.make_aware(datetime.combine(until_date, time.max), local_tz).timestamp()
+    )
+    payload = _request_graph(
+        _threads_insights_url(account.external_id),
+        {
+            "metric": ",".join(THREADS_METRICS.values()),
+            "since": since_timestamp,
+            "until": until_timestamp,
+            "access_token": token,
+        },
+        account,
+        "threads_insights:account",
+    )
+    if payload is None:
+        raise AnalyticsUnavailableError
+
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise AnalyticsUnavailableError
+    metrics_by_name = {
+        item["name"]: item
+        for item in data
+        if isinstance(item, dict) and isinstance(item.get("name"), str)
+    }
+
+    series = {}
+    totals = {}
+    unavailable = []
+    for key, metric in THREADS_METRICS.items():
+        metric_data = metrics_by_name.get(metric)
+        if metric_data is None:
+            metric_series, total = [], None
+        else:
+            metric_series, total = _normalize_threads_metric(metric_data)
+        series[key] = metric_series
+        totals[key] = total
+        if metric_data is None:
+            unavailable.append(
+                {"key": key, "metric": metric, "code": "metric_unavailable"}
+            )
+
+    series["net_follower_growth"] = None
+    totals["net_follower_growth"] = None
+    result = {
+        "range": {
+            "since": since_date.isoformat(),
+            "until": until_date.isoformat(),
+            "days": days,
+        },
+        "totals": totals,
+        "series": series,
+        "unavailable": unavailable,
+    }
+    if not unavailable:
+        cache.set(_cache_key(account.pk, "overview", days), result, CACHE_TTL_SECONDS)
+    return result
+
+
 def _series_total(series):
     return sum(item["value"] for item in series)
 
 
 def get_page_overview(account, days):
     days = min(days, 90)
+    if account.provider == SocialAccount.Provider.THREADS:
+        key = _cache_key(account.pk, "overview", days)
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        return _get_threads_overview(account, days)
+
     key = _cache_key(account.pk, "overview", days)
     cached = cache.get(key)
     if cached is not None:
@@ -280,6 +416,9 @@ def get_page_posts(account, limit=10):
         return cached
 
     token = _access_token(account)
+    if account.provider == SocialAccount.Provider.THREADS:
+        return _get_threads_posts(account, token, limit, key)
+
     url = (
         f"{settings.FB_GRAPH_BASE_URL}/{settings.FB_GRAPH_VERSION}/"
         f"{account.external_id}/posts"
@@ -330,4 +469,71 @@ def get_page_posts(account, limit=10):
         )
 
     cache.set(key, posts, CACHE_TTL_SECONDS)
+    return posts
+
+
+def _get_threads_posts(account, token, limit, cache_key):
+    payload = _request_graph(
+        f"https://graph.threads.net/v1.0/{account.external_id}/threads",
+        {
+            "fields": "id,text,timestamp,permalink",
+            "limit": limit,
+            "access_token": token,
+        },
+        account,
+        "threads",
+    )
+    if payload is None:
+        raise AnalyticsUnavailableError
+
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise AnalyticsUnavailableError
+
+    posts = []
+    metrics = ",".join(THREADS_POST_METRICS)
+    for item in data:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            continue
+        insight_payload = _request_graph(
+            _threads_insights_url(item["id"]),
+            {"metric": metrics, "access_token": token},
+            account,
+            f"threads_insights:post:{item['id']}",
+        )
+        if insight_payload is None:
+            insight_data = []
+        else:
+            insight_data = insight_payload.get("data")
+            if not isinstance(insight_data, list):
+                raise AnalyticsUnavailableError
+        metrics_by_name = {
+            insight["name"]: insight
+            for insight in insight_data
+            if isinstance(insight, dict) and isinstance(insight.get("name"), str)
+        }
+        counts = {}
+        for metric in THREADS_POST_METRICS:
+            _, total = _normalize_threads_metric(metrics_by_name.get(metric))
+            counts[metric] = total
+
+        message = item.get("text")
+        if isinstance(message, str) and len(message) > 140:
+            message = f"{message[:137]}..."
+        posts.append(
+            {
+                "id": item["id"],
+                "message": message,
+                "created_time": item.get("timestamp"),
+                "permalink_url": item.get("permalink"),
+                "reactions": counts["likes"],
+                "comments": counts["replies"],
+                "shares": counts["shares"],
+                "views": counts["views"],
+                "reposts": counts["reposts"],
+                "quotes": counts["quotes"],
+            }
+        )
+
+    cache.set(cache_key, posts, CACHE_TTL_SECONDS)
     return posts

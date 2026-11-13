@@ -155,18 +155,15 @@ class APIEndpointTests(TestCase):
             "Only draft or scheduled posts can be modified.",
         )
 
-    def test_delete_on_failed_post_returns_400(self):
+    def test_delete_on_failed_post_returns_204(self):
         self.client.force_authenticate(user=self.alice)
         self.alice_post.status = Post.Status.FAILED
         self.alice_post.save(update_fields=["status"])
 
         response = self.client.delete(f"/api/posts/{self.alice_post.pk}/")
 
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(
-            response.data["detail"],
-            "Only draft or scheduled posts can be modified.",
-        )
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(Post.objects.filter(pk=self.alice_post.pk).exists())
 
     def test_delete_on_draft_returns_204(self):
         self.client.force_authenticate(user=self.alice)
@@ -175,6 +172,83 @@ class APIEndpointTests(TestCase):
 
         self.assertEqual(response.status_code, 204)
         self.assertFalse(Post.objects.filter(pk=self.alice_post.pk).exists())
+
+    def test_delete_on_posted_or_publishing_post_returns_400(self):
+        self.client.force_authenticate(user=self.alice)
+
+        for status in (Post.Status.POSTED, Post.Status.PUBLISHING):
+            with self.subTest(status=status):
+                post = Post.objects.create(
+                    user=self.alice,
+                    account=self.alice_account,
+                    content=f"{status} post",
+                    status=status,
+                )
+
+                response = self.client.delete(f"/api/posts/{post.pk}/")
+
+                self.assertEqual(response.status_code, 400)
+                self.assertTrue(Post.objects.filter(pk=post.pk).exists())
+
+    def test_bob_cannot_delete_alices_failed_post(self):
+        self.client.force_authenticate(user=self.bob)
+        self.alice_post.status = Post.Status.FAILED
+        self.alice_post.save(update_fields=["status"])
+
+        response = self.client.delete(f"/api/posts/{self.alice_post.pk}/")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(Post.objects.filter(pk=self.alice_post.pk).exists())
+
+    def test_clear_failed_deletes_only_current_users_failed_posts(self):
+        self.client.force_authenticate(user=self.alice)
+        failed_post = Post.objects.create(
+            user=self.alice,
+            account=self.alice_account,
+            content="Failed post",
+            status=Post.Status.FAILED,
+        )
+        draft_post = Post.objects.create(
+            user=self.alice,
+            account=self.alice_account,
+            content="Draft post",
+        )
+        other_users_failed_post = Post.objects.create(
+            user=self.bob,
+            account=self.bob_account,
+            content="Bob failed post",
+            status=Post.Status.FAILED,
+        )
+
+        response = self.client.post("/api/posts/clear-failed/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"deleted": 1})
+        self.assertFalse(Post.objects.filter(pk=failed_post.pk).exists())
+        self.assertTrue(Post.objects.filter(pk=draft_post.pk).exists())
+        self.assertTrue(Post.objects.filter(pk=other_users_failed_post.pk).exists())
+
+    def test_bob_clear_failed_deletes_only_bobs_failed_posts(self):
+        self.client.force_authenticate(user=self.bob)
+        alice_failed_post = Post.objects.create(
+            user=self.alice,
+            account=self.alice_account,
+            content="Alice failed post",
+            status=Post.Status.FAILED,
+        )
+        bob_failed_post = Post.objects.create(
+            user=self.bob,
+            account=self.bob_account,
+            content="Bob failed post",
+            status=Post.Status.FAILED,
+        )
+
+        response = self.client.post("/api/posts/clear-failed/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, {"deleted": 1})
+        self.assertTrue(Post.objects.filter(pk=alice_failed_post.pk).exists())
+        self.assertFalse(Post.objects.filter(pk=bob_failed_post.pk).exists())
 
     def test_patch_content_on_scheduled_post_returns_200(self):
         self.client.force_authenticate(user=self.alice)

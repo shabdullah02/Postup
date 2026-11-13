@@ -1,7 +1,10 @@
 from django.utils import timezone
 from rest_framework import serializers
 
+from accounts.models import SocialAccount
 from posts.models import Post
+
+THREADS_MAX_TEXT_LENGTH = 500
 
 
 class PostSerializer(serializers.ModelSerializer):
@@ -36,6 +39,28 @@ class PostSerializer(serializers.ModelSerializer):
         if value.user != self.context["request"].user:
             raise serializers.ValidationError("Account does not belong to the user.")
         return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        account = attrs.get("account") or getattr(self.instance, "account", None)
+        content = attrs.get("content")
+        if content is None and self.instance is not None:
+            content = self.instance.content
+        if account is not None and account.provider == SocialAccount.Provider.THREADS:
+            if not (content or "").strip():
+                raise serializers.ValidationError(
+                    {"content": "Threads posts cannot be empty."}
+                )
+            if len(content) > THREADS_MAX_TEXT_LENGTH:
+                raise serializers.ValidationError(
+                    {
+                        "content": (
+                            f"Threads posts are limited to "
+                            f"{THREADS_MAX_TEXT_LENGTH} characters."
+                        )
+                    }
+                )
+        return attrs
 
     def validate_scheduled_at(self, value):
         if value is None:
